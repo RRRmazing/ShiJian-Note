@@ -13,6 +13,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.shijiannote.app.data.ScheduleEvent
+import com.shijiannote.app.data.AppDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 object ReminderScheduler {
     private const val CHANNEL_ID = "schedule_reminders"
@@ -51,6 +55,14 @@ object ReminderScheduler {
 }
 
 class ReminderReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) = ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), intent.getLongExtra(ID, 0))
+    override fun onReceive(context: Context, intent: Intent) {
+        val id = intent.getLongExtra(ID, 0)
+        ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), id)
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try { AppDatabase.get(context).appDao().markScheduleReminded(id) }
+            finally { pendingResult.finish() }
+        }
+    }
     companion object { const val TITLE = "title"; const val NOTE = "note"; const val ID = "id" }
 }

@@ -21,7 +21,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val dao = AppDatabase.get(application).appDao()
 
     val schedule = dao.observeSchedule()
+    val archivedSchedule = dao.observeArchivedSchedule()
     val todoBoards = dao.observeTodoBoards()
+    val archivedTodoBoards = dao.observeArchivedTodoBoards()
     val diaries = dao.observeDiaries()
     val memoryCategories = dao.observeMemoryCategories()
 
@@ -36,6 +38,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteSchedule(event: ScheduleEvent) = viewModelScope.launch { dao.deleteSchedule(event) }
+    fun archiveSchedules(events: List<ScheduleEvent>) = viewModelScope.launch { dao.archiveSchedules(events.map { it.id }) }
+    fun deleteSchedules(events: List<ScheduleEvent>) = viewModelScope.launch { dao.deleteSchedules(events.map { it.id }) }
+    fun archiveExpiredItems(today: Long, now: Long) = viewModelScope.launch {
+        dao.archiveExpiredSchedules(now)
+        dao.archiveExpiredTodoBoards(today)
+    }
 
     fun addTodo(summary: String, dueDate: Long?, tasks: List<String>) = viewModelScope.launch {
         val boardId = dao.insertTodoBoard(TodoBoard(summary = summary.trim(), dueDate = dueDate))
@@ -60,10 +68,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteTodo(board: TodoBoard) = viewModelScope.launch { dao.deleteTodoBoard(board) }
+    fun archiveTodos(boards: List<TodoBoard>) = viewModelScope.launch { dao.archiveTodoBoards(boards.map { it.id }) }
+    fun deleteTodos(boards: List<TodoBoard>) = viewModelScope.launch { dao.deleteTodoBoards(boards.map { it.id }) }
 
 
     fun saveDiary(entry: DiaryEntry) = viewModelScope.launch { dao.saveDiary(entry) }
     fun deleteDiary(entry: DiaryEntry) = viewModelScope.launch { dao.deleteDiary(entry) }
+    fun deleteDiaries(entries: List<DiaryEntry>) = viewModelScope.launch { dao.deleteDiaries(entries.map { it.id }) }
     fun addMemoryCategory(name: String) = viewModelScope.launch { dao.insertMemoryCategory(MemoryCategory(name = name.trim())) }
     fun updateMemoryCategory(category: MemoryCategory) = viewModelScope.launch { dao.updateMemoryCategory(category) }
     fun deleteMemoryCategory(category: MemoryCategory) = viewModelScope.launch { dao.deleteMemoryCategory(category) }
@@ -72,6 +83,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun updateMemoryEntry(entry: MemoryEntry) = viewModelScope.launch { dao.updateMemoryEntry(entry) }
     fun deleteMemoryEntry(entry: MemoryEntry) = viewModelScope.launch { dao.deleteMemoryEntry(entry) }
+    fun deleteMemoryCategories(categories: List<MemoryCategory>) = viewModelScope.launch { dao.deleteMemoryCategories(categories.map { it.id }) }
+    fun deleteMemoryEntries(entries: List<MemoryEntry>) = viewModelScope.launch { dao.deleteMemoryEntries(entries.map { it.id }) }
 
     companion object {
         fun factory(application: Application): ViewModelProvider.Factory = viewModelFactory {

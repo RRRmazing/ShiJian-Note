@@ -13,7 +13,9 @@ data class ScheduleEvent(
     val reminderDays: Int,
     val reminderHours: Int,
     val reminderMinutes: Int,
-    val note: String = ""
+    val note: String = "",
+    val archived: Boolean = false,
+    val reminderTriggered: Boolean = false
 )
 
 @Entity(tableName = "todo_boards")
@@ -22,7 +24,8 @@ data class TodoBoard(
     val summary: String,
     val dueDate: Long? = null,
     val expanded: Boolean = true,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val archived: Boolean = false
 )
 
 @Entity(

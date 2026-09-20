@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +40,9 @@ import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -70,6 +74,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -79,6 +84,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -130,10 +136,14 @@ private fun ShiJianNoteApp() {
     val context = LocalContext.current
     val model: AppViewModel = viewModel(factory = AppViewModel.factory(context.applicationContext as Application))
     val schedules by model.schedule.collectAsState(initial = emptyList())
+    val archivedSchedules by model.archivedSchedule.collectAsState(initial = emptyList())
     val todoBoards by model.todoBoards.collectAsState(initial = emptyList())
+    val archivedTodoBoards by model.archivedTodoBoards.collectAsState(initial = emptyList())
     val diaries by model.diaries.collectAsState(initial = emptyList())
     val memories by model.memoryCategories.collectAsState(initial = emptyList())
     var tab by remember { mutableStateOf(Tab.SCHEDULE) }
+    var showScheduleHistory by remember { mutableStateOf(false) }
+    var showTodoHistory by remember { mutableStateOf(false) }
     var showScheduleDialog by remember { mutableStateOf(false) }
     var scheduleToEdit by remember { mutableStateOf<ScheduleEvent?>(null) }
     var showTodoDialog by remember { mutableStateOf(false) }
@@ -145,6 +155,13 @@ private fun ShiJianNoteApp() {
     var memoryCategoryId by remember { mutableStateOf<Long?>(null) }
     var showMemoryEntryDialog by remember { mutableStateOf(false) }
     var memoryEntryToEdit by remember { mutableStateOf<MemoryEntry?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            model.archiveExpiredItems(startOfToday(), System.currentTimeMillis())
+            delay(60_000)
+        }
+    }
 
     MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Blue, secondary = Blue)) {
         Scaffold(
@@ -158,8 +175,8 @@ private fun ShiJianNoteApp() {
             },
             floatingActionButton = {
                 when (tab) {
-                    Tab.SCHEDULE -> FloatingActionButton(onClick = { scheduleToEdit = null; showScheduleDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建时间任务", tint = Color.White) }
-                    Tab.TODO -> FloatingActionButton(onClick = { todoToEdit = null; showTodoDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建待办", tint = Color.White) }
+                    Tab.SCHEDULE -> if (!showScheduleHistory) FloatingActionButton(onClick = { scheduleToEdit = null; showScheduleDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建时间任务", tint = Color.White) }
+                    Tab.TODO -> if (!showTodoHistory) FloatingActionButton(onClick = { todoToEdit = null; showTodoDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建待办", tint = Color.White) }
                     Tab.DIARY -> FloatingActionButton(onClick = { val today = startOfToday(); diaryDateToEdit = today; showDiaryDialog = diaries.firstOrNull { it.day == today } }, containerColor = Blue) { Icon(Icons.Default.Add, "写日记", tint = Color.White) }
                     Tab.MEMORY -> FloatingActionButton(onClick = { if (memoryCategoryId == null) { categoryToEdit = null; showCategoryDialog = true } else { memoryEntryToEdit = null; showMemoryEntryDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, "新建", tint = Color.White) }
                     Tab.SETTINGS -> { }
@@ -168,8 +185,8 @@ private fun ShiJianNoteApp() {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    Tab.SCHEDULE -> ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onDelete = { ReminderScheduler.cancel(context, it.id); model.deleteSchedule(it) })
-                    Tab.TODO -> TodoScreen(todoBoards, model::toggleTodo, model::toggleTodoBoard, onEdit = { todoToEdit = it; showTodoDialog = true }, onDelete = model::deleteTodo)
+                    Tab.SCHEDULE -> if (showScheduleHistory) ScheduleHistoryScreen(archivedSchedules, onBack = { showScheduleHistory = false }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }) else ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onArchive = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.archiveSchedules(events) }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onShowHistory = { showScheduleHistory = true })
+                    Tab.TODO -> if (showTodoHistory) TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }) else TodoScreen(todoBoards, model::toggleTodo, model::toggleTodoBoard, onEdit = { todoToEdit = it; showTodoDialog = true }, onArchive = { boards -> model.archiveTodos(boards.map { it.board }) }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onShowHistory = { showTodoHistory = true })
                     Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryDateToEdit = day; showDiaryDialog = entry }, onDelete = model::deleteDiary)
                     Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEntryToEdit = it; showMemoryEntryDialog = true }, onDeleteEntry = model::deleteMemoryEntry)
                     Tab.SETTINGS -> SettingsScreen(onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) })
@@ -233,47 +250,102 @@ private fun SettingsScreen(onOpenNotificationSettings: () -> Unit) {
 }
 
 @Composable
-private fun ScheduleScreen(events: List<ScheduleEvent>, onEdit: (ScheduleEvent) -> Unit, onDelete: (ScheduleEvent) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("时间表", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Text("今天：${formatToday()}", color = Muted, fontSize = 12.sp) } }
-        if (events.isEmpty()) item { EmptyHint("还没有时间任务", "点击右下角＋，添加需要准时提醒的事情") }
-        items(events, key = { it.id }) { event -> SwipeActionRow(onEdit = { onEdit(event) }, onDelete = { onDelete(event) }) { ScheduleCard(event) } }
+private fun ScheduleScreen(events: List<ScheduleEvent>, onEdit: (ScheduleEvent) -> Unit, onArchive: (List<ScheduleEvent>) -> Unit, onDelete: (List<ScheduleEvent>) -> Unit, onShowHistory: () -> Unit) {
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Column { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("时间表", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); IconButton(onClick = onShowHistory) { Icon(Icons.Default.MenuBook, "打开历史", tint = Blue) } }; Text("今天：${formatToday()}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp)) } }
+            if (events.isEmpty()) item { EmptyHint("还没有时间任务", "点击右下角＋，添加需要准时提醒的事情") }
+            items(events, key = { it.id }) { event ->
+                val toggle = { selectedIds = selectedIds.toggle(event.id) }
+                val card: @Composable () -> Unit = { ScheduleCard(event, showReminder = true, selected = event.id in selectedIds, selecting = selecting, onToggle = toggle, onLongSelect = { selectedIds = setOf(event.id) }) }
+                if (selecting) card() else ThreeActionSwipeRow(onEdit = { onEdit(event) }, onArchive = { onArchive(listOf(event)) }, onDelete = { onDelete(listOf(event)) }) { card() }
+            }
+        }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onArchive = { onArchive(events.filter { it.id in selectedIds }); selectedIds = emptySet() }, onDelete = { onDelete(events.filter { it.id in selectedIds }); selectedIds = emptySet() })
     }
 }
 
 @Composable
-private fun ScheduleCard(event: ScheduleEvent) {
+private fun ScheduleHistoryScreen(events: List<ScheduleEvent>, onBack: () -> Unit, onDelete: (List<ScheduleEvent>) -> Unit) {
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("时间表历史", fontSize = 28.sp, color = Ink) } }
+            if (events.isEmpty()) item { EmptyHint("暂无历史事务", "归档或过期的时间事务会出现在这里") }
+            items(events, key = { it.id }) { event ->
+                val card: @Composable () -> Unit = { ScheduleCard(event, showReminder = false, selected = event.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(event.id) }, onLongSelect = { selectedIds = setOf(event.id) }) }
+                if (selecting) card() else SwipeDeleteRow(onDelete = { onDelete(listOf(event)) }) { card() }
+            }
+        }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { onDelete(events.filter { it.id in selectedIds }); selectedIds = emptySet() })
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun ScheduleCard(event: ScheduleEvent, showReminder: Boolean, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit) {
     var expanded by remember(event.id) { mutableStateOf(false) }
-    val reminder = formatReminder(event)
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+    val reminder = if (event.reminderTriggered) "已提醒" else formatReminder(event)
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else expanded = !expanded }, onLongClick = onLongSelect)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(5.dp))
                 Column(Modifier.weight(1f)) { Text(formatScheduleDate(event), color = Blue, fontSize = 13.sp); Text(event.title, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                if (selecting) SelectionMarker(selected)
             }
-            if (reminder != null) { Spacer(Modifier.height(4.dp)); Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.NotificationsNone, null, Modifier.size(15.dp), tint = Muted); Spacer(Modifier.width(5.dp)); Text(reminder, color = Muted, fontSize = 12.sp) } }
+            if (showReminder && reminder != null) { Spacer(Modifier.height(4.dp)); Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.NotificationsNone, null, Modifier.size(15.dp), tint = Muted); Spacer(Modifier.width(5.dp)); Text(reminder, color = Muted, fontSize = 12.sp) } }
             if (expanded && event.note.isNotBlank()) { HorizontalDivider(Modifier.padding(vertical = 8.dp)); Text("事务详情", fontSize = 12.sp, color = Muted); Text(event.note, color = Ink, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp)) }
         }
     }
 }
+
 @Composable
-private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onEdit: (TodoBoardWithItems) -> Unit, onDelete: (TodoBoard) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("待办", fontSize = 30.sp, color = Ink); Text("记录事情和大概时间；准时提醒请使用时间表", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
-        if (boards.isEmpty()) item { EmptyHint("还没有待办", "点击＋创建一个待办框，再在里面连续添加小事项") }
-        items(boards, key = { it.board.id }) { board ->
-            val done = board.items.count { it.completed }
-            val overdue = board.board.dueDate?.let { it < startOfToday() && done < board.items.size } == true
-            SwipeActionRow(onEdit = { onEdit(board) }, onDelete = { onDelete(board.board) }) {
-                Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Row(Modifier.fillMaxWidth().clickable { toggleBoard(board.board) }, verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted) }
-                        Spacer(Modifier.height(6.dp))
-                        Text(when { overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp))
-                        if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = { toggleItem(item) }); Text(item.text, color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null) } } }
-                    }
-                }
+private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onEdit: (TodoBoardWithItems) -> Unit, onArchive: (List<TodoBoardWithItems>) -> Unit, onDelete: (List<TodoBoardWithItems>) -> Unit, onShowHistory: () -> Unit) {
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("待办", fontSize = 30.sp, color = Ink); Text("记录事情和大概时间；准时提醒请使用时间表", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }; IconButton(onClick = onShowHistory) { Icon(Icons.Default.MenuBook, "打开历史", tint = Blue) } } }
+            if (boards.isEmpty()) item { EmptyHint("还没有待办", "点击＋创建一个待办框，再在里面连续添加小事项") }
+            items(boards, key = { it.board.id }) { board ->
+                val card: @Composable () -> Unit = { TodoBoardCard(board, history = false, selected = board.board.id in selectedIds, selecting = selecting, toggleItem = toggleItem, toggleBoard = toggleBoard, onToggle = { selectedIds = selectedIds.toggle(board.board.id) }, onLongSelect = { selectedIds = setOf(board.board.id) }) }
+                if (selecting) card() else ThreeActionSwipeRow(onEdit = { onEdit(board) }, onArchive = { onArchive(listOf(board)) }, onDelete = { onDelete(listOf(board)) }) { card() }
             }
+        }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onArchive = { onArchive(boards.filter { it.board.id in selectedIds }); selectedIds = emptySet() }, onDelete = { onDelete(boards.filter { it.board.id in selectedIds }); selectedIds = emptySet() })
+    }
+}
+
+@Composable
+private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Unit, onDelete: (List<TodoBoardWithItems>) -> Unit) {
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("待办历史", fontSize = 28.sp, color = Ink) } }
+            if (boards.isEmpty()) item { EmptyHint("暂无历史待办", "归档或过期的待办会出现在这里") }
+            items(boards, key = { it.board.id }) { board ->
+                val card: @Composable () -> Unit = { TodoBoardCard(board, history = true, selected = board.board.id in selectedIds, selecting = selecting, toggleItem = {}, toggleBoard = {}, onToggle = { selectedIds = selectedIds.toggle(board.board.id) }, onLongSelect = { selectedIds = setOf(board.board.id) }) }
+                if (selecting) card() else SwipeDeleteRow(onDelete = { onDelete(listOf(board)) }) { card() }
+            }
+        }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { onDelete(boards.filter { it.board.id in selectedIds }); selectedIds = emptySet() })
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit) {
+    val done = board.items.count { it.completed }
+    val overdue = !history && board.board.dueDate?.let { it < startOfToday() && done < board.items.size } == true
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
+            if (board.board.dueDate != null || !history) { Spacer(Modifier.height(6.dp)); Text(when { history && board.board.dueDate != null -> "截止时间：${formatDateOnly(board.board.dueDate)}"; overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp)) }
+            if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = if (history || selecting) null else { _: Boolean -> toggleItem(item) }); Text(item.text, color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null) } } }
         }
     }
 }
@@ -281,12 +353,26 @@ private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) 
 private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -> Unit, onDelete: (DiaryEntry) -> Unit) {
     var showCalendar by remember { mutableStateOf(false) }
     var month by remember { mutableStateOf(YearMonth.now()) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("日记", fontSize = 30.sp, color = Ink); Text("每天一篇，标题固定为日期", color = Muted, fontSize = 13.sp) }; IconButton(onClick = { showCalendar = !showCalendar }) { Icon(Icons.Default.CalendarMonth, "打开日历", tint = Blue) } } }
-        if (showCalendar) item { DiaryCalendar(month, entries.map { it.day }.toSet(), onPrev = { month = month.minusMonths(1) }, onNext = { month = month.plusMonths(1) }, onSelect = { day -> onOpen(day, entries.firstOrNull { it.day == day }) }) }
-        if (entries.isEmpty()) item { EmptyHint("今天想记下什么？", "点击＋写下今天的日记") }
-        items(entries, key = { it.id }) { entry -> SwipeActionRow(onEdit = { onOpen(entry.day, entry) }, onDelete = { onDelete(entry) }) { Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { onOpen(entry.day, entry) }) { Column(Modifier.padding(16.dp)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } } } }
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("日记", fontSize = 30.sp, color = Ink); Text("每天一篇，标题固定为日期", color = Muted, fontSize = 13.sp) }; IconButton(onClick = { showCalendar = !showCalendar }) { Icon(Icons.Default.CalendarMonth, "打开日历", tint = Blue) } } }
+            if (showCalendar) item { DiaryCalendar(month, entries.map { it.day }.toSet(), onPrev = { month = month.minusMonths(1) }, onNext = { month = month.plusMonths(1) }, onSelect = { day -> onOpen(day, entries.firstOrNull { it.day == day }) }) }
+            if (entries.isEmpty()) item { EmptyHint("今天想记下什么？", "点击＋写下今天的日记") }
+            items(entries, key = { it.id }) { entry ->
+                val card: @Composable () -> Unit = { DiaryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }, onOpen = { onOpen(entry.day, entry) }) }
+                if (selecting) card() else SwipeActionRow(onEdit = { onOpen(entry.day, entry) }, onDelete = { onDelete(entry) }) { card() }
+            }
+        }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { entries.filter { it.id in selectedIds }.forEach(onDelete); selectedIds = emptySet() })
     }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -318,16 +404,39 @@ private fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrev: () ->
 @Composable
 private fun MemoryScreen(categories: List<MemoryCategoryWithEntries>, selectedId: Long?, onBack: () -> Unit, onOpen: (Long) -> Unit, onEditCategory: (MemoryCategory) -> Unit, onDeleteCategory: (MemoryCategory) -> Unit, onEditEntry: (MemoryEntry) -> Unit, onDeleteEntry: (MemoryEntry) -> Unit) {
     val selected = categories.firstOrNull { it.category.id == selectedId }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { if (selected == null) { Text("记忆", fontSize = 30.sp, color = Ink); Text("把值得留下的事情收进分类", color = Muted, fontSize = 13.sp) } else Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text(selected.category.name, fontSize = 28.sp, color = Ink) } }
-        if (selected == null) {
-            if (categories.isEmpty()) item { EmptyHint("还没有记忆分类", "点击＋，创建如「旅行」「学习」这样的分类") }
-            items(categories, key = { it.category.id }) { category -> SwipeActionRow(onEdit = { onEditCategory(category.category) }, onDelete = { onDeleteCategory(category.category) }) { Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { onOpen(category.category.id) }) { Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Folder, null, tint = Blue); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(category.category.name, color = Ink, fontSize = 18.sp); Text("${category.entries.size} 条记忆", color = Muted, fontSize = 13.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } } } }
-        } else {
-            if (selected.entries.isEmpty()) item { EmptyHint("这个分类还没有内容", "点击＋，记录一件具体的记忆") }
-            items(selected.entries, key = { it.id }) { entry -> SwipeActionRow(onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) }) { Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text(entry.title, color = Ink, fontSize = 18.sp); Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } } } }
+    var selectedIds by remember(selectedId) { mutableStateOf(setOf<Long>()) }
+    val selecting = selectedIds.isNotEmpty()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { if (selected == null) { Text("记忆", fontSize = 30.sp, color = Ink); Text("把值得留下的事情收进分类", color = Muted, fontSize = 13.sp) } else Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text(selected.category.name, fontSize = 28.sp, color = Ink) } }
+            if (selected == null) {
+                if (categories.isEmpty()) item { EmptyHint("还没有记忆分类", "点击＋，创建如「旅行」「学习」这样的分类") }
+                items(categories, key = { it.category.id }) { category ->
+                    val card: @Composable () -> Unit = { MemoryCategoryCard(category, selected = category.category.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(category.category.id) }, onLongSelect = { selectedIds = setOf(category.category.id) }, onOpen = { onOpen(category.category.id) }) }
+                    if (selecting) card() else SwipeActionRow(onEdit = { onEditCategory(category.category) }, onDelete = { onDeleteCategory(category.category) }) { card() }
+                }
+            } else {
+                if (selected.entries.isEmpty()) item { EmptyHint("这个分类还没有内容", "点击＋，记录一件具体的记忆") }
+                items(selected.entries, key = { it.id }) { entry ->
+                    val card: @Composable () -> Unit = { MemoryEntryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }) }
+                    if (selecting) card() else SwipeActionRow(onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) }) { card() }
+                }
+            }
         }
+        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { if (selected == null) categories.filter { it.category.id in selectedIds }.forEach { onDeleteCategory(it.category) } else selected.entries.filter { it.id in selectedIds }.forEach(onDeleteEntry); selectedIds = emptySet() })
     }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun MemoryCategoryCard(category: MemoryCategoryWithEntries, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Folder, null, tint = Blue); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(category.category.name, color = Ink, fontSize = 18.sp); Text("${category.entries.size} 条记忆", color = Muted, fontSize = 13.sp) }; if (selecting) SelectionMarker(selected) else Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
 }
 @Composable
 private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
@@ -397,6 +506,54 @@ private fun TextInputDialog(title: String, hint: String, initial: String, onDism
 private fun MemoryEntryDialog(entry: MemoryEntry?, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
     var title by remember(entry?.id) { mutableStateOf(entry?.title.orEmpty()) }; var content by remember(entry?.id) { mutableStateOf(entry?.content.orEmpty()) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(if (entry == null) "记录一段记忆" else "更改记忆") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(title, { title = it }, label = { Text("标题") }, singleLine = true); OutlinedTextField(content, { content = it }, label = { Text("内容") }, minLines = 5) } }, confirmButton = { Button(onClick = { if (title.isNotBlank()) onSave(title, content) }) { Text("保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
+}
+
+private fun Set<Long>.toggle(id: Long): Set<Long> = if (id in this) this - id else this + id
+
+@Composable
+private fun SelectionMarker(selected: Boolean) {
+    Box(Modifier.size(22.dp).clip(CircleShape).background(if (selected) Blue else Color(0xFFE2E2E8)), contentAlignment = Alignment.Center) {
+        if (selected) Icon(Icons.Default.CheckCircle, null, tint = Color.White, modifier = Modifier.size(17.dp))
+    }
+}
+
+@Composable
+private fun SelectionActionBar(onCancel: () -> Unit, onArchive: (() -> Unit)? = null, onDelete: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Row(Modifier.fillMaxWidth().padding(16.dp).height(54.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFFE9E9EE))) {
+            Box(Modifier.weight(1f).fillMaxHeight().background(Color.White).clickable(onClick = onCancel), contentAlignment = Alignment.Center) { Text("取消", color = Ink, fontSize = 16.sp) }
+            if (onArchive != null) Box(Modifier.weight(1f).fillMaxHeight().background(Color(0xFFFFC107)).clickable(onClick = onArchive), contentAlignment = Alignment.Center) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Archive, null, tint = Ink, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("归档", color = Ink, fontSize = 16.sp) } }
+            Box(Modifier.weight(1f).fillMaxHeight().background(Color(0xFFFF3B30)).clickable(onClick = onDelete), contentAlignment = Alignment.Center) { Icon(Icons.Default.Delete, "删除", tint = Color.White) }
+        }
+    }
+}
+
+@Composable
+private fun ThreeActionSwipeRow(onEdit: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val actionWidth = 264.dp
+    val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }
+    val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
+        Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.End) {
+            Box(Modifier.width(88.dp).fillMaxHeight().background(Blue).clickable { scope.launch { offset.animateTo(0f) }; onEdit() }, contentAlignment = Alignment.Center) { Text("更改", color = Color.White, fontSize = 15.sp) }
+            Box(Modifier.width(88.dp).fillMaxHeight().background(Color(0xFFFFC107)).clickable { scope.launch { offset.animateTo(0f) }; onArchive() }, contentAlignment = Alignment.Center) { Text("归档", color = Ink, fontSize = 15.sp) }
+            Box(Modifier.width(88.dp).fillMaxHeight().background(Color(0xFFFF3B30)).clickable { onDelete() }, contentAlignment = Alignment.Center) { Text("删除", color = Color.White, fontSize = 15.sp) }
+        }
+        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, dragAmount -> change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }) { content() }
+    }
+}
+
+@Composable
+private fun SwipeDeleteRow(onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val actionWidth = 88.dp
+    val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }
+    val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
+        Box(Modifier.matchParentSize().background(Color(0xFFFF3B30)), contentAlignment = Alignment.CenterEnd) { Icon(Icons.Default.Delete, "删除", tint = Color.White, modifier = Modifier.padding(end = 30.dp)) }
+        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, dragAmount -> change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { if (offset.value <= -actionWidthPx / 2) onDelete() else scope.launch { offset.animateTo(0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }) { content() }
+    }
 }
 
 @Composable
