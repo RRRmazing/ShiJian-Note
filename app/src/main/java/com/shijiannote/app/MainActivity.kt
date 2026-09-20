@@ -2,6 +2,8 @@ package com.shijiannote.app
 
 import android.app.Application
 import android.app.DatePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.provider.Settings
@@ -29,6 +31,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -46,6 +50,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.filled.ExpandLess
@@ -107,6 +112,8 @@ import com.shijiannote.app.data.MemoryCategoryWithEntries
 import com.shijiannote.app.data.ScheduleEvent
 import com.shijiannote.app.data.TodoBoardWithItems
 import com.shijiannote.app.data.TodoItem
+import java.text.ParsePosition
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -134,6 +141,36 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class ImportDestination { SCHEDULE, TODO }
+
+private data class ImportedTransaction(
+    val sourceLine: Int,
+    val title: String,
+    val startAt: Long?,
+    val endText: String,
+    val note: String,
+    val reminderDays: Int,
+    val reminderHours: Int,
+    val reminderMinutes: Int,
+    val problem: String? = null
+)
+
+private data class ImportParseResult(
+    val entries: List<ImportedTransaction>,
+    val ignoredLines: Int
+)
+private data class ImportDraft(
+    val sourceLine: Int,
+    val title: String,
+    val timeText: String,
+    val startAt: Long?,
+    val endAt: Long?,
+    val note: String,
+    val reminderDays: Int,
+    val reminderHours: Int,
+    val reminderMinutes: Int,
+    val problem: String?
+)
 private enum class Tab(val label: String) { SCHEDULE("时间表"), TODO("待办"), DIARY("日记"), MEMORY("记忆"), SETTINGS("设置") }
 
 @Composable
@@ -163,6 +200,11 @@ private fun ShiJianNoteApp() {
     var showMemoryEntryDialog by remember { mutableStateOf(false) }
     var memoryEntryToEdit by remember { mutableStateOf<MemoryEntry?>(null) }
 
+    var advancedFeaturesOpen by remember { mutableStateOf(false) }
+    var importDestination by remember { mutableStateOf<ImportDestination?>(null) }
+    var pendingTodoImport by remember { mutableStateOf(false) }
+    var todoImportTitle by remember { mutableStateOf("自主导入") }
+    var todoImportDueDate by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
             model.archiveExpiredItems(startOfToday(), System.currentTimeMillis())
@@ -174,15 +216,19 @@ private fun ShiJianNoteApp() {
     BackHandler(enabled = !selectionActive && tab == Tab.TODO && showTodoHistory) { showTodoHistory = false }
     BackHandler(enabled = !selectionActive && tab == Tab.MEMORY && memoryCategoryId != null) { memoryCategoryId = null }
     BackHandler(enabled = selectionActive) { cancelSelectionRequest++ }
+    BackHandler(enabled = importDestination != null) { importDestination = null }
+    BackHandler(enabled = importDestination == null && advancedFeaturesOpen) { advancedFeaturesOpen = false }
 
     MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Blue, secondary = Blue)) {
         Scaffold(
             containerColor = Color(0xFFFCFBFF),
             bottomBar = {
+                if (!advancedFeaturesOpen && importDestination == null) {
                 NavigationBar(containerColor = Color.White) {
                     Tab.entries.forEach { item ->
                         NavigationBarItem(selected = tab == item, onClick = { tab = item; memoryCategoryId = null; selectionActive = false }, icon = { Icon(tabIcon(item), contentDescription = item.label) }, label = { Text(item.label) })
                     }
+                }
                 }
             },
             floatingActionButton = {
@@ -201,7 +247,32 @@ private fun ShiJianNoteApp() {
                     Tab.TODO -> if (showTodoHistory) TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else TodoScreen(todoBoards, model::toggleTodo, model::toggleTodoBoard, onEdit = { todoToEdit = it; showTodoDialog = true }, onArchive = { boards -> model.archiveTodos(boards.map { it.board }) }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onShowHistory = { selectionActive = false; showTodoHistory = true }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryDateToEdit = day; showDiaryDialog = entry }, onDelete = model::deleteDiary, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEntryToEdit = it; showMemoryEntryDialog = true }, onDeleteEntry = model::deleteMemoryEntry, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
-                    Tab.SETTINGS -> SettingsScreen(onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) })
+                    Tab.SETTINGS -> when {
+                        importDestination != null -> ImportTransactionsScreen(
+                            destination = importDestination!!,
+                            todoTitle = todoImportTitle,
+                            todoDueDate = todoImportDueDate,
+                            onBack = { importDestination = null },
+                            onImportSchedules = { events -> model.importSchedules(events) { ReminderScheduler.schedule(context, it) } },
+                            onImportTodo = { tasks -> model.addTodo(todoImportTitle, todoImportDueDate, tasks) },
+                            onFinish = { destination ->
+                                importDestination = null
+                                advancedFeaturesOpen = false
+                                tab = if (destination == ImportDestination.SCHEDULE) Tab.SCHEDULE else Tab.TODO
+                            }
+                        )
+                        advancedFeaturesOpen -> AdvancedFeaturesScreen(
+                            onBack = { advancedFeaturesOpen = false },
+                            onOpenImport = { destination ->
+                                if (destination == ImportDestination.TODO) pendingTodoImport = true
+                                else importDestination = ImportDestination.SCHEDULE
+                            }
+                        )
+                        else -> SettingsScreen(
+                            onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) },
+                            onOpenAdvancedFeatures = { advancedFeaturesOpen = true }
+                        )
+                    }
                 }
             }
         }
@@ -228,10 +299,21 @@ private fun ShiJianNoteApp() {
         if (existing == null) model.addMemoryEntry(memoryCategoryId!!, title, content) else model.updateMemoryEntry(existing.copy(title = title.trim(), content = content.trim()))
         showMemoryEntryDialog = false
     }
+    if (pendingTodoImport) TodoImportSetupDialog(
+        initialTitle = todoImportTitle,
+        initialDueDate = todoImportDueDate,
+        onDismiss = { pendingTodoImport = false },
+        onContinue = { title, dueDate ->
+            todoImportTitle = title
+            todoImportDueDate = dueDate
+            pendingTodoImport = false
+            importDestination = ImportDestination.TODO
+        }
+    )
 }
 
 @Composable
-private fun SettingsScreen(onOpenNotificationSettings: () -> Unit) {
+private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvancedFeatures: () -> Unit) {
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
@@ -258,9 +340,196 @@ private fun SettingsScreen(onOpenNotificationSettings: () -> Unit) {
                 }
             }
         }
+        item {
+            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { onOpenAdvancedFeatures() }) {
+                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Settings, contentDescription = null, tint = Blue)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("高级功能", color = Ink, fontSize = 18.sp)
+                        Text("导入整理后的事务文本", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
+                    }
+                    Icon(Icons.Default.ChevronRight, contentDescription = "高级功能", tint = Muted)
+                }
+            }
+        }
     }
 }
 
+@Composable
+private fun AdvancedFeaturesScreen(onBack: () -> Unit, onOpenImport: (ImportDestination) -> Unit) {
+    var chooseDestination by remember { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Column { Text("高级功能", fontSize = 28.sp, color = Ink); Text("批量整理和导入事务", color = Muted, fontSize = 13.sp) } } }
+        item {
+            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { chooseDestination = true }) {
+                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.AutoMirrored.Filled.Notes, null, tint = Blue)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) { Text("文字导入事务", color = Ink, fontSize = 18.sp); Text("将 AI 整理后的文本导入时间表或待办", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp)) }
+                    Icon(Icons.Default.ChevronRight, "文字导入事务", tint = Muted)
+                }
+            }
+        }
+        item { Text("提示：图片、PDF 等资料请先交由支持相应识别能力的 AI 整理。导入前请检查 AI 是否说明了无法读取或无法确认的内容。", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) }
+    }
+    if (chooseDestination) AlertDialog(
+        onDismissRequest = { chooseDestination = false },
+        title = { Text("文字导入事务") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("请选择要创建的事务类型")
+            Button(onClick = { chooseDestination = false; onOpenImport(ImportDestination.SCHEDULE) }, modifier = Modifier.fillMaxWidth()) { Text("导入到时间表") }
+            OutlinedButton(onClick = { chooseDestination = false; onOpenImport(ImportDestination.TODO) }, modifier = Modifier.fillMaxWidth()) { Text("导入待办") }
+        } },
+        confirmButton = {},
+        dismissButton = { OutlinedButton(onClick = { chooseDestination = false }) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun TodoImportSetupDialog(initialTitle: String, initialDueDate: Long?, onDismiss: () -> Unit, onContinue: (String, Long?) -> Unit) {
+    val context = LocalContext.current
+    var title by remember { mutableStateOf(initialTitle) }
+    var dueDate by remember { mutableStateOf(initialDueDate) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("待办导入设置") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("所有本次导入的事务会放在同一个待办标题下。", color = Muted, fontSize = 13.sp)
+            OutlinedTextField(title, { title = it }, label = { Text("标题") }, singleLine = true)
+            if (dueDate == null) OutlinedButton(onClick = {
+                val calendar = Calendar.getInstance()
+                DatePickerDialog(context, { _, y, m, d -> calendar.set(y, m, d, 0, 0, 0); calendar.set(Calendar.MILLISECOND, 0); dueDate = calendar.timeInMillis }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
+            }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text("设置截止日期（可选）") }
+            else Row(verticalAlignment = Alignment.CenterVertically) { AssistChip(onClick = {}, label = { Text("截止：${formatDateOnly(dueDate!!)}") }); IconButton(onClick = { dueDate = null }) { Icon(Icons.Default.Close, "清除截止日期") } }
+        } },
+        confirmButton = { Button(onClick = { if (title.isNotBlank()) onContinue(title.trim(), dueDate) }) { Text("继续") } },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun ImportTransactionsScreen(
+    destination: ImportDestination,
+    todoTitle: String,
+    todoDueDate: Long?,
+    onBack: () -> Unit,
+    onImportSchedules: (List<ScheduleEvent>) -> Unit,
+    onImportTodo: (List<String>) -> Unit,
+    onFinish: (ImportDestination) -> Unit
+) {
+    val context = LocalContext.current
+    var rawText by remember(destination) { mutableStateOf("") }
+    var completedCount by remember { mutableIntStateOf(0) }
+    val parsed = remember(rawText, destination) { parseImportedTransactions(rawText, destination) }
+    val drafts = remember(rawText, destination) {
+        mutableStateListOf(*parsed.entries.map { entry ->
+            ImportDraft(entry.sourceLine, entry.title, entry.startAt?.let(::formatImportedTime).orEmpty(), entry.startAt, entry.endText.takeIf { it.isNotBlank() }?.let(::parseImportedDate), entry.note, entry.reminderDays, entry.reminderHours, entry.reminderMinutes, entry.problem)
+        }.toTypedArray())
+    }
+    fun usable(draft: ImportDraft): Boolean = draft.problem == null && draft.title.isNotBlank() && (destination == ImportDestination.TODO || parseImportedDate(draft.timeText) != null)
+    var selectedLines by remember(rawText, destination) { mutableStateOf(drafts.filter(::usable).map { it.sourceLine }.toSet()) }
+    val selected = drafts.filter { it.sourceLine in selectedLines && usable(it) }
+    val prompt = importPrompt(destination)
+    if (completedCount > 0) { ImportResultScreen(destination, completedCount, onFinish); return }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Column { Text(if (destination == ImportDestination.SCHEDULE) "导入到时间表" else "导入待办", fontSize = 27.sp, color = Ink); Text(if (destination == ImportDestination.SCHEDULE) "展开条目可修改标题、时间和备注" else "标题：$todoTitle${todoDueDate?.let { " · 截止 ${formatDateOnly(it)}" }.orEmpty()}", color = Muted, fontSize = 13.sp) } } }
+        item {
+            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(15.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("第一步：复制提示词", fontSize = 17.sp, color = Ink, modifier = Modifier.weight(1f)); IconButton(onClick = { context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("事务导入提示词", prompt)) }) { Icon(Icons.Default.ContentCopy, "复制提示词", tint = Blue) } }
+                    Text("把资料和提示词交给 AI。若资料有图片、PDF 或无法读取部分，AI 必须明确指出，不能猜测。", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
+                    Text(prompt, color = Ink, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp).height(150.dp).horizontalScroll(rememberScrollState()))
+                }
+            }
+        }
+        item {
+            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(15.dp)) {
+                    Text("第二步：粘贴 AI 的结果", fontSize = 17.sp, color = Ink)
+                    Text("编辑区按一行一条事务设计，可纵向滚动、横向滑动；前后夹带的解释文字会自动忽略。", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
+                    OutlinedTextField(rawText, { rawText = it }, modifier = Modifier.fillMaxWidth().height(230.dp).padding(top = 10.dp).horizontalScroll(rememberScrollState()), label = { Text("每行一个 JSON 事务") }, placeholder = { Text("粘贴 AI 回答…") }, textStyle = androidx.compose.ui.text.TextStyle(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 13.sp), minLines = 9, maxLines = 12)
+                    Text("发现 ${drafts.size} 条 · 可导入 ${drafts.count(::usable)} 条 · 已忽略 ${parsed.ignoredLines} 行", color = if (drafts.none(::usable) && rawText.isNotBlank()) DeleteInk else Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
+        if (drafts.isNotEmpty()) item { Text("导入预览（点击条目编辑）", fontSize = 18.sp, color = Ink, modifier = Modifier.padding(top = 2.dp)) }
+        items(drafts, key = { it.sourceLine }) { draft ->
+            EditableImportDraftCard(
+                draft = draft,
+                destination = destination,
+                checked = draft.sourceLine in selectedLines,
+                usable = usable(draft),
+                onCheckedChange = { checked -> selectedLines = if (checked) selectedLines + draft.sourceLine else selectedLines - draft.sourceLine },
+                onChange = { changed -> drafts[drafts.indexOfFirst { it.sourceLine == changed.sourceLine }] = changed }
+            )
+        }
+        if (rawText.isNotBlank() && drafts.none(::usable)) item { Text(if (destination == ImportDestination.SCHEDULE) "请补齐每条时间表事务的标题和时间后再勾选导入。" else "请补齐每条待办的标题后再勾选导入。", color = DeleteInk, fontSize = 13.sp) }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f).height(52.dp)) { Text("取消") }
+                Button(onClick = {
+                    if (destination == ImportDestination.SCHEDULE) onImportSchedules(selected.map { draft ->
+                        ScheduleEvent(title = draft.title.trim(), eventAt = parseImportedDate(draft.timeText)!!, reminderDays = draft.reminderDays, reminderHours = draft.reminderHours, reminderMinutes = draft.reminderMinutes, note = draft.note.trim())
+                    }) else onImportTodo(selected.map { draft -> draft.title.trim() + draft.note.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty() })
+                    completedCount = selected.size
+                }, enabled = selected.isNotEmpty(), modifier = Modifier.weight(1f).height(52.dp)) { Text("确认导入（${selected.size}）") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditableImportDraftCard(draft: ImportDraft, destination: ImportDestination, checked: Boolean, usable: Boolean, onCheckedChange: (Boolean) -> Unit, onChange: (ImportDraft) -> Unit) {
+    var expanded by remember(draft.sourceLine) { mutableStateOf(false) }
+    var showRecognizedTimes by remember(draft.sourceLine) { mutableStateOf(false) }
+    val timeValid = destination == ImportDestination.TODO || parseImportedDate(draft.timeText) != null
+    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Row(Modifier.fillMaxWidth().background(SoftBlue).clickable { expanded = !expanded }.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = checked, enabled = usable, onCheckedChange = onCheckedChange)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(draft.title.ifBlank { "未命名事务" }, color = Ink, fontSize = 16.sp)
+                    val detail = when {
+                        draft.problem != null -> draft.problem
+                        draft.title.isBlank() -> "缺少事务名称，展开后补齐"
+                        !timeValid -> "缺少或无法识别时间，展开后补齐"
+                        destination == ImportDestination.SCHEDULE -> "时间：${draft.timeText}"
+                        else -> draft.note.ifBlank { "点击展开，补充备注" }
+                    }
+                    Text(detail, color = if (usable) Muted else DeleteInk, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
+                }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "收起" else "展开", tint = Blue)
+            }
+            if (expanded) Column(Modifier.fillMaxWidth().background(Color.White).padding(13.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(draft.title, { onChange(draft.copy(title = it)) }, modifier = Modifier.fillMaxWidth(), label = { Text("标题") }, singleLine = true)
+                if (destination == ImportDestination.SCHEDULE) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(draft.timeText, { onChange(draft.copy(timeText = it)) }, modifier = Modifier.weight(1f), label = { Text("时间") }, placeholder = { Text("2026年9月21日 09:30") }, singleLine = true, isError = !timeValid)
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(onClick = { showRecognizedTimes = !showRecognizedTimes }) { Text("选择") }
+                    }
+                    if (showRecognizedTimes) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (draft.startAt != null) OutlinedButton(onClick = { onChange(draft.copy(timeText = formatImportedTime(draft.startAt))) }, modifier = Modifier.fillMaxWidth()) { Text("开始时间：${formatImportedTime(draft.startAt)}") }
+                        if (draft.endAt != null) OutlinedButton(onClick = { onChange(draft.copy(timeText = formatImportedTime(draft.endAt))) }, modifier = Modifier.fillMaxWidth()) { Text("结束时间：${formatImportedTime(draft.endAt)}") }
+                        if (draft.startAt == null && draft.endAt == null) Text("没有可用的 start 或 end 时间；请直接填写上方时间。", color = Muted, fontSize = 13.sp)
+                    }
+                }
+                OutlinedTextField(draft.note, { onChange(draft.copy(note = it)) }, modifier = Modifier.fillMaxWidth(), label = { Text("备注（可选）") }, minLines = 2)
+            }
+        }
+    }
+}
+@Composable
+private fun ImportResultScreen(destination: ImportDestination, count: Int, onFinish: (ImportDestination) -> Unit) {
+    Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Default.CheckCircle, null, tint = Blue, modifier = Modifier.size(56.dp))
+        Text("已创建 $count 条${if (destination == ImportDestination.SCHEDULE) "时间表实例" else "待办事项"}", fontSize = 21.sp, color = Ink, modifier = Modifier.padding(top = 14.dp))
+        Text("已跳过未勾选、缺失或无法识别的信息。", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        Button(onClick = { onFinish(destination) }, modifier = Modifier.padding(top = 22.dp)) { Text(if (destination == ImportDestination.SCHEDULE) "查看时间表" else "查看待办") }
+    }
+}
 @Composable
 private fun ScheduleScreen(events: List<ScheduleEvent>, onEdit: (ScheduleEvent) -> Unit, onArchive: (List<ScheduleEvent>) -> Unit, onDelete: (List<ScheduleEvent>) -> Unit, onShowHistory: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
@@ -359,11 +628,12 @@ private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Un
 private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit) {
     val done = board.items.count { it.completed }
     val overdue = !history && board.board.dueDate?.let { it < startOfToday() && done < board.items.size } == true
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)) {
+    val cardInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(interactionSource = cardInteraction, indication = null, onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
             if (board.board.dueDate != null || !history) { Spacer(Modifier.height(6.dp)); Text(when { history && board.board.dueDate != null -> "截止时间：${formatDateOnly(board.board.dueDate)}"; overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp)) }
-            if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = if (history || selecting) null else { _: Boolean -> toggleItem(item) }); Text(item.text, color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null) } } }
+            if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = if (history || selecting) null else { _: Boolean -> toggleItem(item) }); val parts = item.text.split("\n", limit = 2); Column { Text(parts.first(), color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null); if (parts.size > 1) Text(parts[1], color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) } } } }
         }
     }
 }
@@ -440,7 +710,7 @@ private fun MemoryScreen(categories: List<MemoryCategoryWithEntries>, selectedId
             } else {
                 if (selected.entries.isEmpty()) item { EmptyHint("这个分类还没有内容", "点击＋，记录一件具体的记忆") }
                 items(selected.entries, key = { it.id }) { entry ->
-                    val card: @Composable () -> Unit = { MemoryEntryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }) }
+                    val card: @Composable () -> Unit = { MemoryEntryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }, onOpen = { onEditEntry(entry) }) }
                     if (selecting) card() else SwipeActionRow(onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) }) { card() }
                 }
             }
@@ -457,8 +727,8 @@ private fun MemoryCategoryCard(category: MemoryCategoryWithEntries, selected: Bo
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
+private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
 }
 @Composable
 private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
@@ -611,3 +881,69 @@ private fun formatReminder(event: ScheduleEvent): String? {
     val parts = listOf(event.reminderDays.takeIf { it > 0 }?.let { "${it}天" }, event.reminderHours.takeIf { it > 0 }?.let { "${it}小时" }, event.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }).filterNotNull()
     return parts.takeIf { it.isNotEmpty() }?.let { "提前 ${it.joinToString(" ")}提醒" }
 }
+
+private fun importPrompt(destination: ImportDestination): String = if (destination == ImportDestination.TODO) """
+你是待办事务整理助手。请先检查用户给出的文字、图片、PDF 或其他文件是否确实可读取；若有图片模糊、PDF 页面无法读取、附件缺失或不能确认的内容，必须输出一行 issue 说明，不能猜测或编造。
+
+仅输出逐行 JSON，不要 Markdown 表格。每一条待办独占一行：
+{"title":"待办名称","note":"可选备注"}
+无法确认时：{"issue":"具体无法识别的内容和原因"}
+
+title 不能缺失。不要输出开始时间、结束时间或提醒字段；没有备注时 note 填空字符串。
+""".trimIndent() else """
+你是事务整理助手。请先检查用户给出的文字、图片、PDF 或其他文件是否确实可读取；若存在图片模糊、扫描件 OCR 失败、PDF 页面无法读取、附件缺失或其他不能确认的内容，必须输出一行 issue 说明，不能猜测或编造。
+
+仅输出逐行 JSON，不要 Markdown 表格。每一条事务独占一行：
+{"title":"事务名称","start":"yyyy-MM-dd HH:mm 或 yyyy-MM-dd","end":"可留空","note":"可留空","reminder_days":0,"reminder_hours":0,"reminder_minutes":0}
+无法确认时：{"issue":"具体无法识别的内容和原因"}
+
+title 不能缺失。不确定的开始/结束时间请留空。本次会使用 start 作为时间表实例的时间；没有 start 的事务仍输出，但不要猜测。没有明确提醒信息时三个 reminder 字段都填 0。
+""".trimIndent()
+
+private fun parseImportedTransactions(text: String, destination: ImportDestination): ImportParseResult {
+    if (text.isBlank()) return ImportParseResult(emptyList(), 0)
+    var ignored = 0
+    val unique = linkedSetOf<String>()
+    val entries = mutableListOf<ImportedTransaction>()
+    text.lineSequence().forEachIndexed { index, source ->
+        val line = source.trim().removePrefix("```json").removePrefix("```").trim()
+        if (!line.startsWith("{") || !line.endsWith("}")) { if (line.isNotBlank() && !line.startsWith("```")) ignored++; return@forEachIndexed }
+        try {
+            val json = JSONObject(line)
+            if (json.has("issue")) {
+                entries += ImportedTransaction(index + 1, "无法识别的信息", null, "", "", 0, 0, 0, json.optString("issue", "AI 未说明原因"))
+                return@forEachIndexed
+            }
+            val title = json.optString("title", json.optString("name", "")).trim()
+            val startText = json.optString("start", "").trim()
+            val startAt = startText.takeIf { it.isNotBlank() }?.let(::parseImportedDate)
+            val issue: String? = null
+            val entry = ImportedTransaction(
+                sourceLine = index + 1,
+                title = title,
+                startAt = startAt,
+                endText = json.optString("end", "").trim(),
+                note = json.optString("note", "").trim(),
+                reminderDays = json.optInt("reminder_days", 0).coerceIn(0, 999),
+                reminderHours = json.optInt("reminder_hours", 0).coerceIn(0, 23),
+                reminderMinutes = json.optInt("reminder_minutes", 0).coerceIn(0, 59),
+                problem = issue
+            )
+            val key = "${entry.title}|${entry.startAt}|${entry.endText}|${entry.note}|${entry.reminderDays}|${entry.reminderHours}|${entry.reminderMinutes}"
+            if (entry.problem == null && !unique.add(key)) ignored++ else entries += entry
+        } catch (_: Exception) { ignored++ }
+    }
+    return ImportParseResult(entries, ignored)
+}
+
+private fun parseImportedDate(value: String): Long? {
+    val patterns = listOf("yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/M/d H:m", "yyyy-MM-dd", "yyyy/M/d", "yyyy年M月d日 HH:mm", "yyyy年M月d日")
+    return patterns.firstNotNullOfOrNull { pattern ->
+        val parser = SimpleDateFormat(pattern, Locale.CHINA).apply { isLenient = false }
+        val position = ParsePosition(0)
+        val date = parser.parse(value, position)
+        date?.takeIf { position.index == value.length }?.time
+    }
+}
+
+private fun formatImportedTime(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))

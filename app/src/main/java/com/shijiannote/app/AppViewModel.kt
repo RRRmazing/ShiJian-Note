@@ -32,6 +32,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         afterInsert(event.copy(id = id))
     }
 
+    fun importSchedules(events: List<ScheduleEvent>, afterInsert: (ScheduleEvent) -> Unit) = viewModelScope.launch {
+        events.forEach { event ->
+            val id = dao.insertSchedule(event)
+            afterInsert(event.copy(id = id))
+        }
+    }
+
     fun updateSchedule(event: ScheduleEvent, afterUpdate: (ScheduleEvent) -> Unit) = viewModelScope.launch {
         dao.updateSchedule(event)
         afterUpdate(event)
