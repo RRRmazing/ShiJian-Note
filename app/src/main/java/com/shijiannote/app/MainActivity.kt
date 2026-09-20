@@ -37,7 +37,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
@@ -50,7 +50,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -78,6 +78,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -189,54 +190,47 @@ private fun ShiJianNoteApp() {
 
 @Composable
 private fun ScheduleScreen(events: List<ScheduleEvent>) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Text("时间表", fontSize = 30.sp, color = Ink)
-            Spacer(Modifier.height(12.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = SoftBlue), shape = RoundedCornerShape(18.dp)) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Today, null, tint = Blue)
-                    Spacer(Modifier.width(10.dp))
-                    Column {
-                        Text("今天是：${formatToday()}", color = Ink, fontSize = 16.sp)
-                        Text("时间表按最近发生的任务排列", color = Muted, fontSize = 12.sp)
-                    }
-                }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("时间表", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f))
+                Text("今天：${formatToday()}", color = Muted, fontSize = 12.sp)
             }
         }
         if (events.isEmpty()) item { EmptyHint("还没有时间任务", "点击右下角＋，添加需要准时提醒的事情") }
         items(events, key = { it.id }) { ScheduleCard(it) }
     }
 }
-
 @Composable
 private fun ScheduleCard(event: ScheduleEvent) {
     var expanded by remember(event.id) { mutableStateOf(false) }
+    val reminder = formatReminder(event)
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue)
-                Spacer(Modifier.width(6.dp))
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(5.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(formatEventDate(event.eventAt), color = Blue, fontSize = 14.sp)
-                    Text(event.title, color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(formatScheduleDate(event), color = Blue, fontSize = 13.sp)
+                    Text(event.title, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.NotificationsNone, null, Modifier.size(16.dp), tint = Muted)
-                Spacer(Modifier.width(5.dp))
-                Text(formatReminder(event), color = Muted, fontSize = 13.sp)
+            if (reminder != null) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.NotificationsNone, null, Modifier.size(15.dp), tint = Muted)
+                    Spacer(Modifier.width(5.dp))
+                    Text(reminder, color = Muted, fontSize = 12.sp)
+                }
             }
             if (expanded && event.note.isNotBlank()) {
-                Divider(Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("事务详情", fontSize = 12.sp, color = Muted)
-                Text(event.note, color = Ink, modifier = Modifier.padding(top = 3.dp))
+                Text(event.note, color = Ink, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
             }
         }
     }
 }
-
 @Composable
 private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) -> Unit, toggleBoard: (com.shijiannote.app.data.TodoBoard) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -265,7 +259,7 @@ private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) 
                         modifier = Modifier.padding(start = 28.dp)
                     )
                     if (board.board.expanded) {
-                        Divider(Modifier.padding(vertical = 10.dp))
+                        HorizontalDivider(Modifier.padding(vertical = 10.dp))
                         board.items.sortedBy { it.position }.forEach { item ->
                             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Checkbox(checked = item.completed, onCheckedChange = { toggleItem(item) })
@@ -374,38 +368,80 @@ private fun MemoryScreen(categories: List<MemoryCategoryWithEntries>, selectedId
 @Composable
 private fun ScheduleDialog(onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
     val context = LocalContext.current
-    val calendar = remember { Calendar.getInstance() }
+    val calendar = remember {
+        Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+    }
     var title by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var dateTime by remember { mutableStateOf(calendar.timeInMillis) }
-    var days by remember { mutableIntStateOf(0) }
-    var hours by remember { mutableIntStateOf(0) }
-    var minutes by remember { mutableIntStateOf(15) }
+    var hasExactTime by remember { mutableStateOf(false) }
+    var days by remember { mutableStateOf("") }
+    var hours by remember { mutableStateOf("") }
+    var minutes by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("新建时间任务") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(title, { title = it }, label = { Text("事务名称") }, singleLine = true)
             OutlinedButton(onClick = {
                 val c = Calendar.getInstance().apply { timeInMillis = dateTime }
                 DatePickerDialog(context, { _, y, m, d -> c.set(y, m, d); dateTime = c.timeInMillis }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show()
-            }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(formatEventDate(dateTime)) }
+            }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(formatDateOnly(dateTime)) }
             OutlinedButton(onClick = {
                 val c = Calendar.getInstance().apply { timeInMillis = dateTime }
-                TimePickerDialog(context, { _, h, m -> c.set(Calendar.HOUR_OF_DAY, h); c.set(Calendar.MINUTE, m); dateTime = c.timeInMillis }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show()
-            }) { Text("设置时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(dateTime))}") }
-            Text("提前提醒", color = Muted, fontSize = 13.sp)
+                TimePickerDialog(context, { _, h, m ->
+                    c.set(Calendar.HOUR_OF_DAY, h)
+                    c.set(Calendar.MINUTE, m)
+                    c.set(Calendar.SECOND, 0)
+                    c.set(Calendar.MILLISECOND, 0)
+                    dateTime = c.timeInMillis
+                    hasExactTime = true
+                }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show()
+            }) { Text(if (hasExactTime) "精确时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(dateTime))}" else "精确时间（可选）：00:00") }
+            Text("提前提醒（全部为 0 表示不提醒）", color = Muted, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                NumberField("天", days) { days = it }; NumberField("时", hours) { hours = it }; NumberField("分", minutes) { minutes = it }
+                NumberField("天", days, 999) { days = it }
+                NumberField("时", hours, 23) { hours = it }
+                NumberField("分", minutes, 59) { minutes = it }
             }
             OutlinedTextField(note, { note = it }, label = { Text("事务详情（可选）") }, minLines = 2)
         }
-    }, confirmButton = { Button(onClick = { if (title.isNotBlank()) onSave(ScheduleEvent(title = title.trim(), eventAt = dateTime, reminderDays = days, reminderHours = hours, reminderMinutes = minutes, note = note.trim())) }) { Text("创建") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
+    }, confirmButton = {
+        Button(onClick = {
+            if (title.isNotBlank()) onSave(ScheduleEvent(
+                title = title.trim(), eventAt = dateTime,
+                reminderDays = days.toIntOrNull() ?: 0,
+                reminderHours = hours.toIntOrNull() ?: 0,
+                reminderMinutes = minutes.toIntOrNull() ?: 0,
+                note = note.trim()
+            ))
+        }) { Text("创建") }
+    }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
 }
-
 @Composable
-private fun NumberField(unit: String, value: Int, onChange: (Int) -> Unit) {
-    OutlinedTextField(value = value.toString(), onValueChange = { onChange(it.filter(Char::isDigit).toIntOrNull()?.coerceAtMost(999) ?: 0) }, label = { Text(unit) }, modifier = Modifier.width(82.dp), singleLine = true)
+private fun NumberField(unit: String, value: String, maximum: Int, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { raw ->
+            val digits = raw.filter(Char::isDigit)
+            val number = digits.toIntOrNull()
+            onChange(when {
+                digits.isEmpty() -> ""
+                number == null -> ""
+                number > maximum -> maximum.toString()
+                else -> digits
+            })
+        },
+        label = { Text(unit) },
+        placeholder = { Text("0") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.width(82.dp),
+        singleLine = true
+    )
 }
-
 @Composable
 private fun TodoDialog(onDismiss: () -> Unit, onSave: (String, Long?, List<String>) -> Unit) {
     val context = LocalContext.current
@@ -453,13 +489,17 @@ private fun EmptyHint(title: String, text: String) {
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.AutoMirrored.Filled.Notes, null, tint = Blue); Text(title, color = Ink, fontSize = 17.sp, modifier = Modifier.padding(top = 8.dp)); Text(text, color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) } }
 }
 
-private fun tabIcon(tab: Tab) = when (tab) { Tab.SCHEDULE -> Icons.Default.EventNote; Tab.TODO -> Icons.Default.CheckCircle; Tab.DIARY -> Icons.AutoMirrored.Filled.Article; Tab.MEMORY -> Icons.Default.Folder }
+private fun tabIcon(tab: Tab) = when (tab) { Tab.SCHEDULE -> Icons.AutoMirrored.Filled.EventNote; Tab.TODO -> Icons.Default.CheckCircle; Tab.DIARY -> Icons.AutoMirrored.Filled.Article; Tab.MEMORY -> Icons.Default.Folder }
 private fun startOfToday(): Long = localDateToMillis(LocalDate.now())
 private fun localDateToMillis(date: LocalDate): Long = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 private fun formatToday(): String = SimpleDateFormat("yyyy年M月d日 EEEE", Locale.CHINA).format(Date())
 private fun formatDateOnly(time: Long): String = SimpleDateFormat(if (Calendar.getInstance().apply { timeInMillis = time }.get(Calendar.YEAR) == Calendar.getInstance().get(Calendar.YEAR)) "M月d日 EEEE" else "yyyy年M月d日 EEEE", Locale.CHINA).format(Date(time))
-private fun formatEventDate(time: Long): String = "${formatDateOnly(time)}  ${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(time))}"
-private fun formatReminder(event: ScheduleEvent): String {
+private fun formatScheduleDate(event: ScheduleEvent): String {
+    val calendar = Calendar.getInstance().apply { timeInMillis = event.eventAt }
+    val hasExactTime = calendar.get(Calendar.HOUR_OF_DAY) != 0 || calendar.get(Calendar.MINUTE) != 0
+    return if (hasExactTime) "${formatDateOnly(event.eventAt)}  ${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(event.eventAt))}" else formatDateOnly(event.eventAt)
+}
+private fun formatReminder(event: ScheduleEvent): String? {
     val parts = listOf(event.reminderDays.takeIf { it > 0 }?.let { "${it}天" }, event.reminderHours.takeIf { it > 0 }?.let { "${it}小时" }, event.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }).filterNotNull()
-    return if (parts.isEmpty()) "到时提醒" else "提前 ${parts.joinToString(" ")}提醒"
+    return parts.takeIf { it.isNotEmpty() }?.let { "提前 ${it.joinToString(" ")}提醒" }
 }

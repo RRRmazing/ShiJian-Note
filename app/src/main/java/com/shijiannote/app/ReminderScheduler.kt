@@ -18,6 +18,7 @@ object ReminderScheduler {
     private const val CHANNEL_ID = "schedule_reminders"
 
     fun schedule(context: Context, event: ScheduleEvent) {
+        if (event.reminderDays == 0 && event.reminderHours == 0 && event.reminderMinutes == 0) return
         requestNotificationPermission(context)
         val remindAt = event.eventAt - event.reminderDays * 86_400_000L - event.reminderHours * 3_600_000L - event.reminderMinutes * 60_000L
         if (remindAt <= System.currentTimeMillis()) return
