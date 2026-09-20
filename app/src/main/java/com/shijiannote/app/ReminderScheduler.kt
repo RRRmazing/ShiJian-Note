@@ -29,6 +29,12 @@ object ReminderScheduler {
         else manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, pending)
     }
 
+    fun cancel(context: Context, eventId: Long) {
+        val intent = Intent(context, ReminderReceiver::class.java)
+        val pending = PendingIntent.getBroadcast(context, eventId.toInt(), intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+        if (pending != null) context.getSystemService(AlarmManager::class.java).cancel(pending)
+    }
+
     private fun requestNotificationPermission(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && context is Activity && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             context.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4101)
