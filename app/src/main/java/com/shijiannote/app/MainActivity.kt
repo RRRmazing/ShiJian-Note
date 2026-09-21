@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.offset
@@ -108,6 +109,8 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -186,6 +189,8 @@ private data class ImportDraft(
 )
 private enum class Tab(val label: String) { SCHEDULE("时间表"), TODO("待办"), DIARY("日记"), MEMORY("记忆"), SETTINGS("设置") }
 
+private data class DiaryEditorState(val day: Long, val entry: DiaryEntry?)
+private data class MemoryEditorState(val categoryId: Long, val entry: MemoryEntry?)
 @Composable
 private fun ShiJianNoteApp() {
     val context = LocalContext.current
@@ -215,11 +220,13 @@ private fun ShiJianNoteApp() {
     var exportNotice by remember { mutableStateOf<String?>(null) }
     var showDiaryDialog by remember { mutableStateOf<DiaryEntry?>(null) }
     var diaryDateToEdit by remember { mutableStateOf<Long?>(null) }
+    var diaryEditor by remember { mutableStateOf<DiaryEditorState?>(null) }
     var showCategoryDialog by remember { mutableStateOf(false) }
     var categoryToEdit by remember { mutableStateOf<MemoryCategory?>(null) }
     var memoryCategoryId by remember { mutableStateOf<Long?>(null) }
     var showMemoryEntryDialog by remember { mutableStateOf(false) }
     var memoryEntryToEdit by remember { mutableStateOf<MemoryEntry?>(null) }
+    var memoryEditor by remember { mutableStateOf<MemoryEditorState?>(null) }
 
     var advancedFeaturesOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
@@ -240,6 +247,8 @@ private fun ShiJianNoteApp() {
     BackHandler(enabled = !selectionActive && tab == Tab.TODO && showTodoHistory) { showTodoHistory = false }
     BackHandler(enabled = !selectionActive && tab == Tab.TODO && dailyTodoPageType != null) { dailyTodoPageType = null }
     BackHandler(enabled = !selectionActive && tab == Tab.MEMORY && memoryCategoryId != null) { memoryCategoryId = null }
+    BackHandler(enabled = diaryEditor != null) { diaryEditor = null }
+    BackHandler(enabled = memoryEditor != null) { memoryEditor = null }
     BackHandler(enabled = selectionActive) { cancelSelectionRequest++ }
     BackHandler(enabled = importDestination != null) { importDestination = null }
     BackHandler(enabled = importDestination == null && advancedFeaturesOpen) { advancedFeaturesOpen = false }
@@ -250,7 +259,7 @@ private fun ShiJianNoteApp() {
         Scaffold(
             containerColor = Color(0xFFFCFBFF),
             bottomBar = {
-                if (!advancedFeaturesOpen && importDestination == null && !aboutOpen && aboutPage == null) {
+                if (diaryEditor == null && memoryEditor == null && !advancedFeaturesOpen && importDestination == null && !aboutOpen && aboutPage == null) {
                 NavigationBar(containerColor = Color.White) {
                     Tab.entries.forEach { item ->
                         NavigationBarItem(selected = tab == item, onClick = { tab = item; memoryCategoryId = null; selectionActive = false; aboutOpen = false; aboutPage = null }, icon = { Icon(tabIcon(item), contentDescription = item.label) }, label = { Text(item.label) })
@@ -259,11 +268,11 @@ private fun ShiJianNoteApp() {
                 }
             },
             floatingActionButton = {
-                when (tab) {
+                if (diaryEditor == null && memoryEditor == null) when (tab) {
                     Tab.SCHEDULE -> if (!showScheduleHistory && !selectionActive) FloatingActionButton(onClick = { scheduleToEdit = null; showScheduleDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建时间任务", tint = Color.White) }
                     Tab.TODO -> if (!showTodoHistory && !selectionActive) FloatingActionButton(onClick = { if (dailyTodoPageType != null) { todoTaskToEdit = null; todoTaskBoardId = dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.board?.id; showTodoTaskDialog = todoTaskBoardId != null } else { todoToEdit = null; showTodoDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, if (dailyTodoPageType == null) "新建待办框" else "新增事务", tint = Color.White) }
-                    Tab.DIARY -> if (!selectionActive) FloatingActionButton(onClick = { val today = startOfToday(); diaryDateToEdit = today; showDiaryDialog = diaries.firstOrNull { it.day == today } }, containerColor = Blue) { Icon(Icons.Default.Add, "写日记", tint = Color.White) }
-                    Tab.MEMORY -> if (!selectionActive) FloatingActionButton(onClick = { if (memoryCategoryId == null) { categoryToEdit = null; showCategoryDialog = true } else { memoryEntryToEdit = null; showMemoryEntryDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, "新建", tint = Color.White) }
+                    Tab.DIARY -> if (!selectionActive) FloatingActionButton(onClick = { val today = startOfToday(); diaryEditor = DiaryEditorState(today, diaries.firstOrNull { it.day == today }) }, containerColor = Blue) { Icon(Icons.Default.Add, "写日记", tint = Color.White) }
+                    Tab.MEMORY -> if (!selectionActive) FloatingActionButton(onClick = { if (memoryCategoryId == null) { categoryToEdit = null; showCategoryDialog = true } else { memoryEditor = MemoryEditorState(memoryCategoryId!!, null) } }, containerColor = Blue) { Icon(Icons.Default.Add, "新建", tint = Color.White) }
                     Tab.SETTINGS -> { }
                 }
             }
@@ -278,8 +287,8 @@ private fun ShiJianNoteApp() {
                         } ?: run { dailyTodoPageType = null }
                         else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showTodoDialog = true }, onArchiveLegacy = { model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
                     }
-                    Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryDateToEdit = day; showDiaryDialog = entry }, onDelete = model::deleteDiary, onExport = { exportNotice = "日记导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
-                    Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEntryToEdit = it; showMemoryEntryDialog = true }, onDeleteEntry = model::deleteMemoryEntry, onReorderCategories = model::reorderMemoryCategories, onReorderEntries = model::reorderMemoryEntries, onExport = { exportNotice = "记忆导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                    Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryEditor = DiaryEditorState(day, entry) }, onDelete = model::deleteDiary, onExport = { exportNotice = "日记导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                    Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEditor = MemoryEditorState(it.categoryId, it) }, onDeleteEntry = model::deleteMemoryEntry, onReorderCategories = model::reorderMemoryCategories, onReorderEntries = model::reorderMemoryEntries, onExport = { exportNotice = "记忆导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.SETTINGS -> when {
                         importDestination != null -> ImportTransactionsScreen(
                             destination = importDestination!!,
@@ -312,6 +321,28 @@ private fun ShiJianNoteApp() {
                     }
                 }
             }
+                diaryEditor?.let { editor ->
+                    DiaryEditorScreen(
+                        day = editor.day,
+                        entry = editor.entry,
+                        onBack = { diaryEditor = null },
+                        onSave = { summary, content ->
+                            model.saveDiary(DiaryEntry(id = editor.entry?.id ?: 0L, day = editor.day, summary = summary, content = content, updatedAt = System.currentTimeMillis()))
+                        }
+                    )
+                }
+                memoryEditor?.let { editor ->
+                    MemoryEditorScreen(
+                        entry = editor.entry,
+                        onBack = { memoryEditor = null },
+                        onCreate = { title, content, afterInsert ->
+                            model.addMemoryEntry(editor.categoryId, title, content, afterInsert)
+                        },
+                        onSave = { savedEntry, title, content ->
+                            model.updateMemoryEntry(savedEntry.copy(title = title, content = content))
+                        }
+                    )
+                }
         }
     }
 

@@ -129,8 +129,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun addMemoryCategory(name: String) = viewModelScope.launch { dao.insertMemoryCategory(MemoryCategory(name = name.trim(), position = dao.nextMemoryCategoryPosition())) }
     fun updateMemoryCategory(category: MemoryCategory) = viewModelScope.launch { dao.updateMemoryCategory(category) }
     fun deleteMemoryCategory(category: MemoryCategory) = viewModelScope.launch { dao.deleteMemoryCategory(category) }
-    fun addMemoryEntry(categoryId: Long, title: String, content: String) = viewModelScope.launch {
-        dao.insertMemoryEntry(MemoryEntry(categoryId = categoryId, title = title.trim(), content = content.trim(), position = dao.nextMemoryEntryPosition(categoryId)))
+    fun addMemoryEntry(categoryId: Long, title: String, content: String, afterInsert: ((MemoryEntry) -> Unit)? = null) = viewModelScope.launch {
+        val entry = MemoryEntry(categoryId = categoryId, title = title.trim(), content = content.trim(), position = dao.nextMemoryEntryPosition(categoryId))
+        val id = dao.insertMemoryEntry(entry)
+        afterInsert?.invoke(entry.copy(id = id))
     }
     fun updateMemoryEntry(entry: MemoryEntry) = viewModelScope.launch { dao.updateMemoryEntry(entry) }
     fun deleteMemoryEntry(entry: MemoryEntry) = viewModelScope.launch { dao.deleteMemoryEntry(entry) }
