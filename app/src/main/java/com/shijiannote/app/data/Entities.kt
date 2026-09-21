@@ -22,8 +22,18 @@ data class ScheduleEvent(
 data class TodoBoard(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val summary: String,
+    /** Optional time on the deadline day from which the advance reminder is calculated. */
+    val reminderAt: Long? = null,
+    val reminderDays: Int = 0,
+    val reminderHours: Int = 0,
     val dueDate: Long? = null,
+    val reminderMinutes: Int = 0,
     val expanded: Boolean = true,
+    val reminderTriggered: Boolean = false,
+    /** Null is a one-time advance reminder; non-null is a recurring reminder rule. */
+    val reminderRule: String? = null,
+    val reminderBaseAt: Long? = null,
+    val reminderCustomDays: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val archived: Boolean = false,
     val position: Int = 0,

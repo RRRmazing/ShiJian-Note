@@ -82,6 +82,12 @@ interface AppDao {
     @Query("UPDATE todo_items SET reminderTriggered = 1 WHERE id = :itemId")
     suspend fun markTodoReminded(itemId: Long)
 
+    @Query("UPDATE todo_boards SET reminderTriggered = 1 WHERE id = :boardId")
+    suspend fun markTodoBoardReminded(boardId: Long)
+
+    @Query("SELECT * FROM todo_boards WHERE id = :boardId LIMIT 1")
+    suspend fun getTodoBoard(boardId: Long): TodoBoard?
+
     @Query("UPDATE todo_items SET position = :position WHERE id = :itemId")
     suspend fun setTodoPosition(itemId: Long, position: Int)
 

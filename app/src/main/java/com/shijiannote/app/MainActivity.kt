@@ -211,6 +211,7 @@ private fun ShiJianNoteApp() {
     var showScheduleDialog by remember { mutableStateOf(false) }
     var scheduleToEdit by remember { mutableStateOf<ScheduleEvent?>(null) }
     var showTodoDialog by remember { mutableStateOf(false) }
+    var showQuickTodoCreate by remember { mutableStateOf(false) }
     var todoToEdit by remember { mutableStateOf<TodoBoardWithItems?>(null) }
     var dailyTodoPageType by remember { mutableStateOf<String?>(null) }
     var showTodoSettings by remember { mutableStateOf(false) }
@@ -270,7 +271,7 @@ private fun ShiJianNoteApp() {
             floatingActionButton = {
                 if (diaryEditor == null && memoryEditor == null) when (tab) {
                     Tab.SCHEDULE -> if (!showScheduleHistory && !selectionActive) FloatingActionButton(onClick = { scheduleToEdit = null; showScheduleDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建时间任务", tint = Color.White) }
-                    Tab.TODO -> if (!showTodoHistory && !selectionActive) FloatingActionButton(onClick = { if (dailyTodoPageType != null) { todoTaskToEdit = null; todoTaskBoardId = dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.board?.id; showTodoTaskDialog = todoTaskBoardId != null } else { todoToEdit = null; showTodoDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, if (dailyTodoPageType == null) "新建待办框" else "新增事务", tint = Color.White) }
+                    Tab.TODO -> if (!showTodoHistory && !selectionActive) FloatingActionButton(onClick = { if (dailyTodoPageType != null) { todoTaskToEdit = null; todoTaskBoardId = dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.board?.id; showTodoTaskDialog = todoTaskBoardId != null } else { todoToEdit = null; showQuickTodoCreate = true } }, containerColor = Blue) { Icon(Icons.Default.Add, if (dailyTodoPageType == null) "新建待办框" else "新增事务", tint = Color.White) }
                     Tab.DIARY -> if (!selectionActive) FloatingActionButton(onClick = { val today = startOfToday(); diaryEditor = DiaryEditorState(today, diaries.firstOrNull { it.day == today }) }, containerColor = Blue) { Icon(Icons.Default.Add, "写日记", tint = Color.White) }
                     Tab.MEMORY -> if (!selectionActive) FloatingActionButton(onClick = { if (memoryCategoryId == null) { categoryToEdit = null; showCategoryDialog = true } else { memoryEditor = MemoryEditorState(memoryCategoryId!!, null) } }, containerColor = Blue) { Icon(Icons.Default.Add, "新建", tint = Color.White) }
                     Tab.SETTINGS -> { }
@@ -281,11 +282,11 @@ private fun ShiJianNoteApp() {
                 when (tab) {
                     Tab.SCHEDULE -> if (showScheduleHistory) ScheduleHistoryScreen(archivedSchedules, onBack = { showScheduleHistory = false }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onArchive = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.archiveSchedules(events) }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onShowHistory = { selectionActive = false; showScheduleHistory = true }, onExport = { exportNotice = "时间表导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.TODO -> when {
-                        showTodoHistory -> TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                        showTodoHistory -> TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> boards.forEach { ReminderScheduler.cancelTodoBoard(context, it.board.id) }; model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                         dailyTodoPageType != null -> dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.let { board ->
                             DailyTodoPage(board = board, onBack = { dailyTodoPageType = null }, onToggle = model::toggleTodo, onToggleImportant = model::toggleTodoImportant, onDelete = { item -> ReminderScheduler.cancelTodo(context, item.id); model.deleteDailyTodo(item) }, onEdit = { item -> todoTaskToEdit = item; todoTaskBoardId = board.board.id; showTodoTaskDialog = true }, onReorder = model::reorderTodoItems, onExport = { exportNotice = "待办导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                         } ?: run { dailyTodoPageType = null }
-                        else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showTodoDialog = true }, onArchiveLegacy = { model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
+                        else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showQuickTodoCreate = true }, onArchiveLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
                     }
                     Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryEditor = DiaryEditorState(day, entry) }, onDelete = model::deleteDiary, onExport = { exportNotice = "日记导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEditor = MemoryEditorState(it.categoryId, it) }, onDeleteEntry = model::deleteMemoryEntry, onReorderCategories = model::reorderMemoryCategories, onReorderEntries = model::reorderMemoryEntries, onExport = { exportNotice = "记忆导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
@@ -361,9 +362,53 @@ private fun ShiJianNoteApp() {
         }
     }
     if (exportNotice != null) AlertDialog(onDismissRequest = { exportNotice = null }, title = { Text("导出") }, text = { Text(exportNotice!!) }, confirmButton = { Button(onClick = { exportNotice = null }) { Text("知道了") } })
-    if (showTodoDialog) TodoDialog(board = todoToEdit, onDismiss = { showTodoDialog = false }, onSave = { summary, due, tasks ->
+    if (showQuickTodoCreate) QuickTodoCreateDialog(board = todoToEdit, onDismiss = { showQuickTodoCreate = false; todoToEdit = null }) { title, tasks, dueAt, reminder ->
         val existing = todoToEdit
-        if (existing == null) model.addTodo(summary, due, tasks) else model.updateTodo(existing.board.copy(summary = summary.trim(), dueDate = due), tasks)
+        val reminderAt = reminder?.let { draft ->
+            if (draft.repeatRule != null) dueAt ?: draft.baseAt else dueAt
+        }
+        if (existing == null) {
+            model.addTodo(
+                summary = title,
+                dueDate = dueAt,
+                tasks = tasks,
+                reminderAt = reminderAt,
+                reminderDays = reminder?.advanceDays ?: 0,
+                reminderHours = reminder?.advanceHours ?: 0,
+                reminderMinutes = reminder?.advanceMinutes ?: 0,
+                reminderRule = reminder?.repeatRule,
+                reminderBaseAt = reminder?.baseAt,
+                reminderCustomDays = reminder?.customDays ?: 0
+            ) { ReminderScheduler.scheduleTodoBoard(context, it) }
+        } else {
+            ReminderScheduler.cancelTodoBoard(context, existing.board.id)
+            val changed = existing.board.copy(
+                summary = title.trim().ifBlank { "未命名清单" },
+                dueDate = dueAt,
+                reminderAt = reminderAt,
+                reminderDays = reminder?.advanceDays ?: 0,
+                reminderHours = reminder?.advanceHours ?: 0,
+                reminderMinutes = reminder?.advanceMinutes ?: 0,
+                reminderRule = reminder?.repeatRule,
+                reminderBaseAt = reminder?.baseAt,
+                reminderCustomDays = reminder?.customDays ?: 0,
+                reminderTriggered = false
+            )
+            model.updateTodo(changed, tasks)
+            ReminderScheduler.scheduleTodoBoard(context, changed)
+        }
+        showQuickTodoCreate = false
+        todoToEdit = null
+    }
+    if (showTodoDialog) TodoReminderDialog(board = todoToEdit, onDismiss = { showTodoDialog = false }, onSave = { summary, due, reminderAt, reminderDays, reminderHours, reminderMinutes, tasks ->
+        val existing = todoToEdit
+        if (existing == null) model.addTodo(summary, due, tasks, reminderAt, reminderDays, reminderHours, reminderMinutes) { ReminderScheduler.scheduleTodoBoard(context, it) }
+        else {
+            ReminderScheduler.cancelTodoBoard(context, existing.board.id)
+            val changed = existing.board.copy(summary = summary.trim(), dueDate = due, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderTriggered = false)
+            model.updateTodo(changed, tasks)
+            ReminderScheduler.scheduleTodoBoard(context, changed)
+        }
         showTodoDialog = false
     })
     if (diaryDateToEdit != null) DiaryDialog(day = diaryDateToEdit!!, entry = showDiaryDialog, onDismiss = { diaryDateToEdit = null }, onSave = { summary, content -> model.saveDiary(DiaryEntry(id = showDiaryDialog?.id ?: 0, day = diaryDateToEdit!!, summary = summary, content = content)); diaryDateToEdit = null })
@@ -934,6 +979,13 @@ private fun ReorderableTodoBoard(
     }
 }
 
+private fun formatTodoBoardReminder(board: TodoBoard): String? {
+    if (board.reminderAt == null) return null
+    if (board.reminderRule != null) return "重复提醒"
+    if (board.reminderTriggered) return "单次已提醒"
+    return "单次提醒"
+}
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit, dragging: Boolean = false, modifier: Modifier = Modifier, enableLongSelection: Boolean = true) {
@@ -947,8 +999,18 @@ private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected:
     }
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().then(clickBehavior)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
-            if (board.board.dueDate != null || !history) { Spacer(Modifier.height(4.dp)); Text(when { history && board.board.dueDate != null -> "截止时间：${formatDateOnly(board.board.dueDate)}"; overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp)) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = if (board.board.expanded) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
+            if (board.board.dueDate != null) {
+                Spacer(Modifier.height(5.dp))
+                Row(Modifier.fillMaxWidth().padding(start = 28.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.NotificationsNone, contentDescription = "截止提醒", tint = if (overdue) Color(0xFFB04A35) else Muted, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("${formatTodoBoardDeadline(board.board.dueDate)}截止", modifier = Modifier.weight(1f), color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 11.sp)
+                    formatTodoBoardReminder(board.board)?.let { status ->
+                        Text(status, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 11.sp)
+                    }
+                }
+            }
             if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = if (history || selecting) null else { _: Boolean -> toggleItem(item) }); val parts = item.text.split("\n", limit = 2); Column { Text(parts.first(), color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null); if (parts.size > 1) Text(parts[1], color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) } } } }
         }
     }
@@ -965,7 +1027,7 @@ private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("日记", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Box { IconButton(onClick = { diarySettingsOpen = true }) { Icon(Icons.Default.Settings, "日记设置", tint = Ink) }; DropdownMenu(expanded = diarySettingsOpen, onDismissRequest = { diarySettingsOpen = false }) { DropdownMenuItem(text = { Text("背景") }, onClick = { diarySettingsOpen = false }); DropdownMenuItem(text = { Text("导出") }, onClick = { diarySettingsOpen = false; onExport() }) } }; IconButton(onClick = { showCalendar = !showCalendar }) { Icon(Icons.Default.CalendarMonth, "打开日历", tint = Blue) } } }
-            if (showCalendar) item { DiaryCalendar(month, entries.map { it.day }.toSet(), onPrev = { month = month.minusMonths(1) }, onNext = { month = month.plusMonths(1) }, onSelect = { day -> onOpen(day, entries.firstOrNull { it.day == day }) }) }
+            if (showCalendar) item { DiaryCalendar(month, entries.map { it.day }.toSet(), onPrevYear = { month = month.minusYears(1) }, onPrev = { month = month.minusMonths(1) }, onNext = { month = month.plusMonths(1) }, onNextYear = { month = month.plusYears(1) }, onSelect = { day -> onOpen(day, entries.firstOrNull { it.day == day }) }) }
             if (entries.isEmpty()) item { EmptyHint("今天想记下什么？", "点击＋写下今天的日记") }
             items(entries, key = { it.id }) { entry ->
                 val card: @Composable () -> Unit = { DiaryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }, onOpen = { onOpen(entry.day, entry) }) }
@@ -981,29 +1043,59 @@ private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -
 private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
 }
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrev: () -> Unit, onNext: () -> Unit, onSelect: (Long) -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+private fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, onSelect: (Long) -> Unit) {
+    val cells = mutableListOf<java.time.LocalDate?>().apply {
+        repeat(month.atDay(1).dayOfWeek.value % 7) { add(null) }
+        (1..month.lengthOfMonth()).forEach { add(month.atDay(it)) }
+        while (size % 7 != 0) add(null)
+    }
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)
+    ) {
         Column(Modifier.padding(14.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onPrev) { Icon(Icons.Default.ChevronLeft, "上个月") }
-                Text("${month.year}年${month.monthValue}月", color = Ink, fontSize = 17.sp)
-                IconButton(onClick = onNext) { Icon(Icons.Default.ChevronRight, "下个月") }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("《", color = Blue, fontSize = 22.sp, modifier = Modifier.clickable(onClick = onPrevYear).padding(4.dp))
+                Spacer(Modifier.width(12.dp))
+                Text("<", color = Blue, fontSize = 20.sp, modifier = Modifier.clickable(onClick = onPrev).padding(4.dp))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text("${month.year}年${month.monthValue}月", color = Ink, fontSize = 18.sp)
+                }
+                Text(">", color = Blue, fontSize = 20.sp, modifier = Modifier.clickable(onClick = onNext).padding(4.dp))
+                Spacer(Modifier.width(12.dp))
+                Text("》", color = Blue, fontSize = 22.sp, modifier = Modifier.clickable(onClick = onNextYear).padding(4.dp))
             }
-            FlowRow(maxItemsInEachRow = 7, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                listOf("日", "一", "二", "三", "四", "五", "六").forEach { Text(it, color = Muted, modifier = Modifier.width(38.dp).padding(bottom = 6.dp)) }
-                val offset = month.atDay(1).dayOfWeek.value % 7
-                repeat(offset) { Spacer(Modifier.width(38.dp).height(38.dp)) }
-                (1..month.lengthOfMonth()).forEach { number ->
-                    val day = month.atDay(number)
-                    val hasDiary = localDateToMillis(day) in markedDays
-                    Box(Modifier.size(38.dp).padding(2.dp).clip(CircleShape).background(if (hasDiary) Blue else Color.Transparent).clickable { onSelect(localDateToMillis(day)) }, contentAlignment = Alignment.Center) {
-                        Text(number.toString(), color = if (hasDiary) Color.White else Ink, fontSize = 13.sp)
+            Row(Modifier.fillMaxWidth()) {
+                listOf("日", "一", "二", "三", "四", "五", "六").forEach { label ->
+                    Box(Modifier.weight(1f).height(26.dp), contentAlignment = Alignment.Center) {
+                        Text(label, color = Muted, fontSize = 13.sp)
                     }
                 }
             }
-            Text("蓝色日期表示已有日记", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            cells.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth()) {
+                    week.forEach { day ->
+                        if (day == null) {
+                            Spacer(Modifier.weight(1f).height(52.dp))
+                        } else {
+                            val hasDiary = localDateToMillis(day) in markedDays
+                            Box(
+                                Modifier.weight(1f).height(52.dp).padding(2.dp).clip(CircleShape)
+                                    .background(if (hasDiary) Blue else Color.Transparent)
+                                    .clickable { onSelect(localDateToMillis(day)) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(day.dayOfMonth.toString(), color = if (hasDiary) Color.White else Ink, fontSize = 13.sp)
+                                    Text(calendarAnnotation(day), color = if (hasDiary) Color.White else Muted, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1160,7 +1252,7 @@ private fun TodoDialog(board: TodoBoardWithItems?, onDismiss: () -> Unit, onSave
         tasks.forEachIndexed { index, task -> OutlinedTextField(task, { tasks[index] = it }, label = { Text(if (index == 0) "输入第一项任务" else "继续添加任务") }, leadingIcon = { Checkbox(false, {}) }, singleLine = true, keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Next), keyboardActions = KeyboardActions(onNext = { if (tasks.lastOrNull()?.isNotBlank() == true) tasks.add("") })) }
         OutlinedButton(onClick = { tasks.add("") }) { Icon(Icons.Default.Add, null); Text(" 添加一项") }
         if (dueDate == null) OutlinedButton(onClick = { val c = Calendar.getInstance(); DatePickerDialog(context, { _, y, m, d -> c.set(y, m, d, 0, 0, 0); c.set(Calendar.MILLISECOND, 0); dueDate = c.timeInMillis }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show() }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text("设置截止日期（可选）") } else Row(verticalAlignment = Alignment.CenterVertically) { AssistChip(onClick = {}, label = { Text("截止：${formatDateOnly(dueDate!!)}") }); IconButton(onClick = { dueDate = null }) { Icon(Icons.Default.Close, "清除截止日期") } }
-    } }, confirmButton = { Button(onClick = { if (summary.isNotBlank() && tasks.any { it.isNotBlank() }) onSave(summary, dueDate, tasks.toList()) }) { Text(if (board == null) "完成" else "保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
+    } }, confirmButton = { Button(onClick = { if (summary.isNotBlank()) onSave(summary, dueDate, tasks.toList()) }) { Text(if (board == null) "完成" else "保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
 }
 @Composable
 private fun DiaryDialog(day: Long, entry: DiaryEntry?, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
@@ -1374,3 +1466,9 @@ private fun parseImportedDate(value: String): Long? {
 }
 
 private fun formatImportedTime(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
+
+private fun formatTodoBoardDeadline(time: Long): String {
+    val deadlineYear = Calendar.getInstance().apply { timeInMillis = time }.get(Calendar.YEAR)
+    val pattern = if (deadlineYear == Calendar.getInstance().get(Calendar.YEAR)) "M月d日 HH时mm分" else "yyyy年M月d日 HH时mm分"
+    return SimpleDateFormat(pattern, Locale.CHINA).format(Date(time))
+}

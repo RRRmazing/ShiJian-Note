@@ -94,11 +94,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         dao.archiveExpiredTodoBoards(today)
     }
 
-    fun addTodo(summary: String, dueDate: Long?, tasks: List<String>) = viewModelScope.launch {
-        val boardId = dao.insertTodoBoard(TodoBoard(summary = summary.trim(), dueDate = dueDate, position = dao.nextTodoBoardPosition()))
+    fun addTodo(summary: String, dueDate: Long?, tasks: List<String>, reminderAt: Long? = null, reminderDays: Int = 0, reminderHours: Int = 0, reminderMinutes: Int = 0, reminderRule: String? = null, reminderBaseAt: Long? = null, reminderCustomDays: Int = 0, afterInsert: ((TodoBoard) -> Unit)? = null) = viewModelScope.launch {
+        val board = TodoBoard(summary = summary.trim().ifBlank { "未命名清单" }, dueDate = dueDate, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderRule = reminderRule, reminderBaseAt = reminderBaseAt, reminderCustomDays = reminderCustomDays, position = dao.nextTodoBoardPosition())
+        val boardId = dao.insertTodoBoard(board)
         dao.insertTodoItems(tasks.filter { it.isNotBlank() }.mapIndexed { index, text ->
             TodoItem(boardId = boardId, text = text.trim(), position = index)
         })
+        afterInsert?.invoke(board.copy(id = boardId))
     }
 
     fun toggleTodo(item: TodoItem) = viewModelScope.launch {
