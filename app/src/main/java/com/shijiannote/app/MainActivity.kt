@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.app.TimePickerDialog
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -153,6 +154,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class ImportDestination { SCHEDULE, TODO }
+private enum class AboutPage { USAGE, SOFTWARE }
 
 private data class ImportedTransaction(
     val sourceLine: Int,
@@ -221,6 +223,7 @@ private fun ShiJianNoteApp() {
 
     var advancedFeaturesOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
+    var aboutPage by remember { mutableStateOf<AboutPage?>(null) }
     var importDestination by remember { mutableStateOf<ImportDestination?>(null) }
     var pendingTodoImport by remember { mutableStateOf(false) }
     var todoImportTitle by remember { mutableStateOf("自主导入") }
@@ -241,15 +244,16 @@ private fun ShiJianNoteApp() {
     BackHandler(enabled = importDestination != null) { importDestination = null }
     BackHandler(enabled = importDestination == null && advancedFeaturesOpen) { advancedFeaturesOpen = false }
     BackHandler(enabled = !selectionActive && tab == Tab.SETTINGS && aboutOpen) { aboutOpen = false }
+    BackHandler(enabled = !selectionActive && tab == Tab.SETTINGS && aboutPage != null) { aboutPage = null }
 
     MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Blue, secondary = Blue)) {
         Scaffold(
             containerColor = Color(0xFFFCFBFF),
             bottomBar = {
-                if (!advancedFeaturesOpen && importDestination == null && !aboutOpen) {
+                if (!advancedFeaturesOpen && importDestination == null && !aboutOpen && aboutPage == null) {
                 NavigationBar(containerColor = Color.White) {
                     Tab.entries.forEach { item ->
-                        NavigationBarItem(selected = tab == item, onClick = { tab = item; memoryCategoryId = null; selectionActive = false }, icon = { Icon(tabIcon(item), contentDescription = item.label) }, label = { Text(item.label) })
+                        NavigationBarItem(selected = tab == item, onClick = { tab = item; memoryCategoryId = null; selectionActive = false; aboutOpen = false; aboutPage = null }, icon = { Icon(tabIcon(item), contentDescription = item.label) }, label = { Text(item.label) })
                     }
                 }
                 }
@@ -297,7 +301,9 @@ private fun ShiJianNoteApp() {
                                 else importDestination = ImportDestination.SCHEDULE
                             }
                         )
-                        aboutOpen -> AboutScreen(onBack = { aboutOpen = false })
+                        aboutPage == AboutPage.USAGE -> UsageGuideScreen(onBack = { aboutPage = null })
+                        aboutPage == AboutPage.SOFTWARE -> SoftwareInfoScreen(onBack = { aboutPage = null })
+                        aboutOpen -> AboutScreen(onBack = { aboutOpen = false }, onOpenUsage = { aboutPage = AboutPage.USAGE }, onOpenSoftware = { aboutPage = AboutPage.SOFTWARE })
                         else -> SettingsScreen(
                             onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) },
                             onOpenAdvancedFeatures = { advancedFeaturesOpen = true },
@@ -404,14 +410,54 @@ private fun SettingsOptionCard(title: String, icon: androidx.compose.ui.graphics
 }
 
 @Composable
-private fun AboutScreen(onBack: () -> Unit) {
-    var detail by remember { mutableStateOf<String?>(null) }
+private fun AboutScreen(onBack: () -> Unit, onOpenUsage: () -> Unit, onOpenSoftware: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("关于", fontSize = 28.sp, color = Ink) } }
-        item { SettingsOptionCard("使用说明", Icons.AutoMirrored.Filled.Notes) { detail = "待办和记忆可长按后继续上下拖动排序；松手则进入多选。左滑条目可显示可用操作。" } }
-        item { SettingsOptionCard("软件信息", Icons.Default.Info) { detail = "时间笔记\n版本 ${BuildConfig.VERSION_NAME}" } }
+        item { SettingsOptionCard("使用说明", Icons.AutoMirrored.Filled.Notes, onOpenUsage) }
+        item { SettingsOptionCard("软件信息", Icons.Default.Info, onOpenSoftware) }
     }
-    detail?.let { message -> AlertDialog(onDismissRequest = { detail = null }, title = { Text(if (message.startsWith("时间笔记")) "软件信息" else "使用说明") }, text = { Text(message) }, confirmButton = { Button(onClick = { detail = null }) { Text("知道了") } }) }
+}
+
+@Composable
+private fun UsageGuideScreen(onBack: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("使用说明", fontSize = 28.sp, color = Ink) } }
+        item { Text("更新时间：2026年9月21日 15时49分29秒", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp)) }
+        item { GuideSection("时笺笔记", "本地优先的时间管理与记录应用。时间表、待办、日记、记忆和设置中的内容均保存在本机 Room 数据库，无需账号或网络连接。") }
+        item { GuideSection("时间表", "• 新建带日期、可选精确时间、提前提醒和详情的事务，列表按开始时间排序。\n• 点击事务可展开或收起详情；提醒发送后会显示“已提醒”。\n• 开始时间过去后，事务会自动归档至历史。\n• 右上角齿轮菜单可进入历史或查看导出提示。") }
+        item { GuideSection("待办", "• 首页提供浅绿色的“今天”和“明天”入口；明天开启时会同时开启今天。\n• 今天/明天中可新建事务、设置具体提醒时间与提前提醒，内容默认单行折叠，点击可展开。\n• 当天事务会自动归档，明天事务会迁移至新的今天；后台任务与下次启动都会补偿检查。\n• 普通待办框可独立展开或收起；“收起”勾选可一次收起或展开全部待办框。\n• 收起的待办框可长按上下排序，新建框默认放在最底部。") }
+        item { GuideSection("长按多选与排序", "• 时间表、日记、记忆及历史列表支持长按多选；返回手势会优先取消多选。\n• 今天/明天事务、记忆分类和分类内记忆：长按后松手进入多选；继续按住并上下移动则退出多选、浮起卡片并调整位置。\n• 多选时可全选、取消或删除；拖动期间会隐藏左滑操作层。") }
+        item { GuideSection("高级功能：文字导入", "在“设置 → 高级功能”中，可把外部 AI 整理后的逐行 JSON 文本批量导入时间表或待办。导入前可预览、勾选和编辑草稿；无法确认的信息不会自动补全。") }
+        item { GuideSection("日记与记忆", "• 日记每天一篇，日期作为标题，并提供已写日记标记的月历。\n• 记忆可创建分类及分类内条目；条目可编辑、左滑更改或删除。\n• 记忆分类和分类内条目均支持长按多选与拖动排序。") }
+        item { GuideSection("通知权限", "首次运行 Android 13 或更高版本时，请允许通知权限。若系统要求精确闹钟权限，也请允许，以取得更准确的时间表提醒。") }
+    }
+}
+
+@Composable
+private fun GuideSection(title: String, text: String) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(title, color = Ink, fontSize = 18.sp)
+            Text(text, color = Muted, fontSize = 14.sp, modifier = Modifier.padding(top = 7.dp))
+        }
+    }
+}
+
+@Composable
+private fun SoftwareInfoScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val githubUrl = "https://github.com/RRRmazing/ShiJian-Note"
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("软件信息", fontSize = 28.sp, color = Ink) } }
+        item { Text("时笺笔记", color = Ink, fontSize = 28.sp, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+        item {
+            Column(Modifier.fillMaxWidth().padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("版本 ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 15.sp)
+                Text("项目地址", color = Ink, fontSize = 16.sp)
+                Text(githubUrl, color = Blue, fontSize = 15.sp, textDecoration = TextDecoration.Underline, modifier = Modifier.clickable { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))) })
+            }
+        }
+    }
 }
 
 @Composable
