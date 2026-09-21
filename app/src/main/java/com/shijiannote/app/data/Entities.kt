@@ -25,7 +25,10 @@ data class TodoBoard(
     val dueDate: Long? = null,
     val expanded: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
-    val archived: Boolean = false
+    val archived: Boolean = false,
+    val position: Int = 0,
+    /** LIST is a legacy/free-form list; TODAY and TOMORROW are the fixed daily pages. */
+    val boardType: String = "LIST"
 )
 
 @Entity(
@@ -43,9 +46,22 @@ data class TodoItem(
     val boardId: Long,
     val text: String,
     val completed: Boolean = false,
-    val position: Int = 0
+    val position: Int = 0,
+    val important: Boolean = false,
+    val reminderAt: Long? = null,
+    val reminderHours: Int = 0,
+    val reminderMinutes: Int = 0,
+    val reminderTriggered: Boolean = false
 )
 
+/** A singleton row (id = 1) keeps daily page visibility and rollover checkpoint. */
+@Entity(tableName = "daily_todo_preferences")
+data class DailyTodoPreferences(
+    @PrimaryKey val id: Int = 1,
+    val showToday: Boolean = true,
+    val showTomorrow: Boolean = true,
+    val lastRolloverDay: Long = 0L
+)
 @Entity(tableName = "diary_entries", indices = [Index(value = ["day"], unique = true)])
 data class DiaryEntry(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -59,6 +75,7 @@ data class DiaryEntry(
 data class MemoryCategory(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
+    val position: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -77,6 +94,7 @@ data class MemoryEntry(
     val categoryId: Long,
     val title: String,
     val content: String,
+    val position: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 

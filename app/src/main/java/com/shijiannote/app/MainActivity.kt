@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,10 +57,15 @@ import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Today
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -79,6 +85,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -88,12 +96,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -128,6 +138,7 @@ private val Blue = Color(0xFF356AE6)
 private val SoftBlue = Color(0xFFEAF0FF)
 private val LightBlue = Color(0xFFDCE8FF)
 private val LightYellow = Color(0xFFFFF1B8)
+private val LightGreen = Color(0xFFDDF4E4)
 private val LightRed = Color(0xFFFFDAD6)
 private val DeleteInk = Color(0xFF9D2922)
 private val Ink = Color(0xFF1C1B20)
@@ -181,6 +192,8 @@ private fun ShiJianNoteApp() {
     val archivedSchedules by model.archivedSchedule.collectAsState(initial = emptyList())
     val todoBoards by model.todoBoards.collectAsState(initial = emptyList())
     val archivedTodoBoards by model.archivedTodoBoards.collectAsState(initial = emptyList())
+    val dailyTodoBoards by model.dailyTodoBoards.collectAsState(initial = emptyList())
+    val dailyTodoPreferences by model.dailyTodoPreferences.collectAsState(initial = null)
     val diaries by model.diaries.collectAsState(initial = emptyList())
     val memories by model.memoryCategories.collectAsState(initial = emptyList())
     var tab by remember { mutableStateOf(Tab.SCHEDULE) }
@@ -192,6 +205,12 @@ private fun ShiJianNoteApp() {
     var scheduleToEdit by remember { mutableStateOf<ScheduleEvent?>(null) }
     var showTodoDialog by remember { mutableStateOf(false) }
     var todoToEdit by remember { mutableStateOf<TodoBoardWithItems?>(null) }
+    var dailyTodoPageType by remember { mutableStateOf<String?>(null) }
+    var showTodoSettings by remember { mutableStateOf(false) }
+    var showTodoTaskDialog by remember { mutableStateOf(false) }
+    var todoTaskToEdit by remember { mutableStateOf<TodoItem?>(null) }
+    var todoTaskBoardId by remember { mutableStateOf<Long?>(null) }
+    var exportNotice by remember { mutableStateOf<String?>(null) }
     var showDiaryDialog by remember { mutableStateOf<DiaryEntry?>(null) }
     var diaryDateToEdit by remember { mutableStateOf<Long?>(null) }
     var showCategoryDialog by remember { mutableStateOf(false) }
@@ -201,6 +220,7 @@ private fun ShiJianNoteApp() {
     var memoryEntryToEdit by remember { mutableStateOf<MemoryEntry?>(null) }
 
     var advancedFeaturesOpen by remember { mutableStateOf(false) }
+    var aboutOpen by remember { mutableStateOf(false) }
     var importDestination by remember { mutableStateOf<ImportDestination?>(null) }
     var pendingTodoImport by remember { mutableStateOf(false) }
     var todoImportTitle by remember { mutableStateOf("自主导入") }
@@ -208,22 +228,25 @@ private fun ShiJianNoteApp() {
     LaunchedEffect(Unit) {
         while (true) {
             model.archiveExpiredItems(startOfToday(), System.currentTimeMillis())
+            model.synchronizeDailyTodosAsync()
             delay(60_000)
         }
     }
 
     BackHandler(enabled = !selectionActive && tab == Tab.SCHEDULE && showScheduleHistory) { showScheduleHistory = false }
     BackHandler(enabled = !selectionActive && tab == Tab.TODO && showTodoHistory) { showTodoHistory = false }
+    BackHandler(enabled = !selectionActive && tab == Tab.TODO && dailyTodoPageType != null) { dailyTodoPageType = null }
     BackHandler(enabled = !selectionActive && tab == Tab.MEMORY && memoryCategoryId != null) { memoryCategoryId = null }
     BackHandler(enabled = selectionActive) { cancelSelectionRequest++ }
     BackHandler(enabled = importDestination != null) { importDestination = null }
     BackHandler(enabled = importDestination == null && advancedFeaturesOpen) { advancedFeaturesOpen = false }
+    BackHandler(enabled = !selectionActive && tab == Tab.SETTINGS && aboutOpen) { aboutOpen = false }
 
     MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Blue, secondary = Blue)) {
         Scaffold(
             containerColor = Color(0xFFFCFBFF),
             bottomBar = {
-                if (!advancedFeaturesOpen && importDestination == null) {
+                if (!advancedFeaturesOpen && importDestination == null && !aboutOpen) {
                 NavigationBar(containerColor = Color.White) {
                     Tab.entries.forEach { item ->
                         NavigationBarItem(selected = tab == item, onClick = { tab = item; memoryCategoryId = null; selectionActive = false }, icon = { Icon(tabIcon(item), contentDescription = item.label) }, label = { Text(item.label) })
@@ -234,7 +257,7 @@ private fun ShiJianNoteApp() {
             floatingActionButton = {
                 when (tab) {
                     Tab.SCHEDULE -> if (!showScheduleHistory && !selectionActive) FloatingActionButton(onClick = { scheduleToEdit = null; showScheduleDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建时间任务", tint = Color.White) }
-                    Tab.TODO -> if (!showTodoHistory && !selectionActive) FloatingActionButton(onClick = { todoToEdit = null; showTodoDialog = true }, containerColor = Blue) { Icon(Icons.Default.Add, "新建待办", tint = Color.White) }
+                    Tab.TODO -> if (!showTodoHistory && !selectionActive) FloatingActionButton(onClick = { if (dailyTodoPageType != null) { todoTaskToEdit = null; todoTaskBoardId = dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.board?.id; showTodoTaskDialog = todoTaskBoardId != null } else { todoToEdit = null; showTodoDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, if (dailyTodoPageType == null) "新建待办框" else "新增事务", tint = Color.White) }
                     Tab.DIARY -> if (!selectionActive) FloatingActionButton(onClick = { val today = startOfToday(); diaryDateToEdit = today; showDiaryDialog = diaries.firstOrNull { it.day == today } }, containerColor = Blue) { Icon(Icons.Default.Add, "写日记", tint = Color.White) }
                     Tab.MEMORY -> if (!selectionActive) FloatingActionButton(onClick = { if (memoryCategoryId == null) { categoryToEdit = null; showCategoryDialog = true } else { memoryEntryToEdit = null; showMemoryEntryDialog = true } }, containerColor = Blue) { Icon(Icons.Default.Add, "新建", tint = Color.White) }
                     Tab.SETTINGS -> { }
@@ -243,10 +266,16 @@ private fun ShiJianNoteApp() {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    Tab.SCHEDULE -> if (showScheduleHistory) ScheduleHistoryScreen(archivedSchedules, onBack = { showScheduleHistory = false }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onArchive = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.archiveSchedules(events) }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onShowHistory = { selectionActive = false; showScheduleHistory = true }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
-                    Tab.TODO -> if (showTodoHistory) TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else TodoScreen(todoBoards, model::toggleTodo, model::toggleTodoBoard, onEdit = { todoToEdit = it; showTodoDialog = true }, onArchive = { boards -> model.archiveTodos(boards.map { it.board }) }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onShowHistory = { selectionActive = false; showTodoHistory = true }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
-                    Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryDateToEdit = day; showDiaryDialog = entry }, onDelete = model::deleteDiary, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
-                    Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEntryToEdit = it; showMemoryEntryDialog = true }, onDeleteEntry = model::deleteMemoryEntry, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                    Tab.SCHEDULE -> if (showScheduleHistory) ScheduleHistoryScreen(archivedSchedules, onBack = { showScheduleHistory = false }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onArchive = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.archiveSchedules(events) }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onShowHistory = { selectionActive = false; showScheduleHistory = true }, onExport = { exportNotice = "时间表导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                    Tab.TODO -> when {
+                        showTodoHistory -> TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                        dailyTodoPageType != null -> dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.let { board ->
+                            DailyTodoPage(board = board, onBack = { dailyTodoPageType = null }, onToggle = model::toggleTodo, onToggleImportant = model::toggleTodoImportant, onDelete = { item -> ReminderScheduler.cancelTodo(context, item.id); model.deleteDailyTodo(item) }, onEdit = { item -> todoTaskToEdit = item; todoTaskBoardId = board.board.id; showTodoTaskDialog = true }, onReorder = model::reorderTodoItems, onExport = { exportNotice = "待办导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                        } ?: run { dailyTodoPageType = null }
+                        else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showTodoDialog = true }, onArchiveLegacy = { model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
+                    }
+                    Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryDateToEdit = day; showDiaryDialog = entry }, onDelete = model::deleteDiary, onExport = { exportNotice = "日记导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                    Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEntryToEdit = it; showMemoryEntryDialog = true }, onDeleteEntry = model::deleteMemoryEntry, onReorderCategories = model::reorderMemoryCategories, onReorderEntries = model::reorderMemoryEntries, onExport = { exportNotice = "记忆导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.SETTINGS -> when {
                         importDestination != null -> ImportTransactionsScreen(
                             destination = importDestination!!,
@@ -268,9 +297,11 @@ private fun ShiJianNoteApp() {
                                 else importDestination = ImportDestination.SCHEDULE
                             }
                         )
+                        aboutOpen -> AboutScreen(onBack = { aboutOpen = false })
                         else -> SettingsScreen(
                             onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) },
-                            onOpenAdvancedFeatures = { advancedFeaturesOpen = true }
+                            onOpenAdvancedFeatures = { advancedFeaturesOpen = true },
+                            onOpenAbout = { aboutOpen = true }
                         )
                     }
                 }
@@ -283,6 +314,16 @@ private fun ShiJianNoteApp() {
         else { ReminderScheduler.cancel(context, event.id); model.updateSchedule(event) { ReminderScheduler.schedule(context, it) } }
         showScheduleDialog = false
     })
+    if (showTodoTaskDialog && todoTaskBoardId != null) {
+        val pageType = dailyTodoBoards.firstOrNull { it.board.id == todoTaskBoardId }?.board?.boardType ?: "TODAY"
+        TodoTaskDialog(item = todoTaskToEdit, pageType = pageType, onDismiss = { showTodoTaskDialog = false }) { text, reminderAt, reminderHours, reminderMinutes ->
+            val existing = todoTaskToEdit
+            if (existing == null) model.addDailyTodo(todoTaskBoardId!!, text, reminderAt, reminderHours, reminderMinutes) { ReminderScheduler.scheduleTodo(context, it) }
+            else { ReminderScheduler.cancelTodo(context, existing.id); model.updateDailyTodo(existing.copy(text = text, reminderAt = reminderAt, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderTriggered = false)) { ReminderScheduler.scheduleTodo(context, it) } }
+            showTodoTaskDialog = false
+        }
+    }
+    if (exportNotice != null) AlertDialog(onDismissRequest = { exportNotice = null }, title = { Text("导出") }, text = { Text(exportNotice!!) }, confirmButton = { Button(onClick = { exportNotice = null }) { Text("知道了") } })
     if (showTodoDialog) TodoDialog(board = todoToEdit, onDismiss = { showTodoDialog = false }, onSave = { summary, due, tasks ->
         val existing = todoToEdit
         if (existing == null) model.addTodo(summary, due, tasks) else model.updateTodo(existing.board.copy(summary = summary.trim(), dueDate = due), tasks)
@@ -313,15 +354,14 @@ private fun ShiJianNoteApp() {
 }
 
 @Composable
-private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvancedFeatures: () -> Unit) {
+private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvancedFeatures: () -> Unit, onOpenAbout: () -> Unit) {
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
             Text("设置", fontSize = 30.sp, color = Ink)
-            Text("管理应用偏好与提醒方式", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
         }
         item {
             Card(
@@ -329,31 +369,49 @@ private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvance
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 modifier = Modifier.fillMaxWidth().clickable { onOpenNotificationSettings() }
             ) {
-                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.NotificationsNone, contentDescription = null, tint = Blue)
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("通知", color = Ink, fontSize = 18.sp)
-                        Text("前往系统设置，管理提醒权限和通知方式", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
-                    }
+                    Text("通知", color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f))
                     Icon(Icons.Default.ChevronRight, contentDescription = "通知设置", tint = Muted)
                 }
             }
         }
         item {
             Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable { onOpenAdvancedFeatures() }) {
-                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Settings, contentDescription = null, tint = Blue)
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("高级功能", color = Ink, fontSize = 18.sp)
-                        Text("导入整理后的事务文本", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
-                    }
+                    Text("高级功能", color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f))
                     Icon(Icons.Default.ChevronRight, contentDescription = "高级功能", tint = Muted)
                 }
             }
         }
+        item { SettingsOptionCard("关于", Icons.Default.Info, onOpenAbout) }
     }
+}
+
+@Composable
+private fun SettingsOptionCard(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = Blue)
+            Spacer(Modifier.width(12.dp))
+            Text(title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ChevronRight, contentDescription = title, tint = Muted)
+        }
+    }
+}
+
+@Composable
+private fun AboutScreen(onBack: () -> Unit) {
+    var detail by remember { mutableStateOf<String?>(null) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("关于", fontSize = 28.sp, color = Ink) } }
+        item { SettingsOptionCard("使用说明", Icons.AutoMirrored.Filled.Notes) { detail = "待办和记忆可长按后继续上下拖动排序；松手则进入多选。左滑条目可显示可用操作。" } }
+        item { SettingsOptionCard("软件信息", Icons.Default.Info) { detail = "时间笔记\n版本 ${BuildConfig.VERSION_NAME}" } }
+    }
+    detail?.let { message -> AlertDialog(onDismissRequest = { detail = null }, title = { Text(if (message.startsWith("时间笔记")) "软件信息" else "使用说明") }, text = { Text(message) }, confirmButton = { Button(onClick = { detail = null }) { Text("知道了") } }) }
 }
 
 @Composable
@@ -531,14 +589,15 @@ private fun ImportResultScreen(destination: ImportDestination, count: Int, onFin
     }
 }
 @Composable
-private fun ScheduleScreen(events: List<ScheduleEvent>, onEdit: (ScheduleEvent) -> Unit, onArchive: (List<ScheduleEvent>) -> Unit, onDelete: (List<ScheduleEvent>) -> Unit, onShowHistory: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+private fun ScheduleScreen(events: List<ScheduleEvent>, onEdit: (ScheduleEvent) -> Unit, onArchive: (List<ScheduleEvent>) -> Unit, onDelete: (List<ScheduleEvent>) -> Unit, onShowHistory: () -> Unit, onExport: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+    var settingsMenuOpen by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(selecting) { onSelectionChanged(selecting) }
     LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { Column { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("时间表", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); IconButton(onClick = onShowHistory) { Icon(Icons.Default.MenuBook, "打开历史", tint = Ink) } }; Text("今天：${formatToday()}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp)) } }
+            item { Column { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("时间表", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Box { IconButton(onClick = { settingsMenuOpen = true }) { Icon(Icons.Default.Settings, "时间表设置", tint = Ink) }; DropdownMenu(expanded = settingsMenuOpen, onDismissRequest = { settingsMenuOpen = false }) { DropdownMenuItem(text = { Text("历史") }, onClick = { settingsMenuOpen = false; onShowHistory() }); DropdownMenuItem(text = { Text("导出") }, onClick = { settingsMenuOpen = false; onExport() }) } } }; Text("今天：${formatToday()}", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp)) } }
             if (events.isEmpty()) item { EmptyHint("还没有时间任务", "点击右下角＋，添加需要准时提醒的事情") }
             items(events, key = { it.id }) { event ->
                 val toggle = { selectedIds = selectedIds.toggle(event.id) }
@@ -587,6 +646,142 @@ private fun ScheduleCard(event: ScheduleEvent, showReminder: Boolean, selected: 
 }
 
 @Composable
+private fun DailyTodoHomeScreen(boards: List<TodoBoardWithItems>, legacyBoards: List<TodoBoardWithItems>, preferences: com.shijiannote.app.data.DailyTodoPreferences?, settingsOpen: Boolean, onSettingsOpen: () -> Unit, onOpenHistory: () -> Unit, onOpenPage: (String) -> Unit, onSetVisible: (String, Boolean) -> Unit, onToggleLegacyItem: (TodoItem) -> Unit, onToggleLegacyBoard: (TodoBoard) -> Unit, onEditLegacy: (TodoBoardWithItems) -> Unit, onArchiveLegacy: (TodoBoardWithItems) -> Unit, onDeleteLegacy: (TodoBoardWithItems) -> Unit, onReorderLegacy: (List<TodoBoard>) -> Unit, onSetLegacyExpanded: (List<TodoBoard>, Boolean) -> Unit) {
+    val showToday = preferences?.showToday ?: true; val showTomorrow = preferences?.showTomorrow ?: true
+    val today = boards.firstOrNull { it.board.boardType == "TODAY" }; val tomorrow = boards.firstOrNull { it.board.boardType == "TOMORROW" }
+    var orderedLegacy by remember { mutableStateOf(legacyBoards) }
+    var draggingLegacyId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(legacyBoards) { if (draggingLegacyId == null) orderedLegacy = legacyBoards }
+    fun moveLegacy(board: TodoBoardWithItems, direction: Int) {
+        val from = orderedLegacy.indexOfFirst { it.board.id == board.board.id }
+        val to = (from + direction).coerceIn(0, orderedLegacy.lastIndex)
+        if (from < 0 || from == to) return
+        val updated = orderedLegacy.toMutableList(); val moved = updated.removeAt(from); updated.add(to, moved)
+        orderedLegacy = updated
+        onReorderLegacy(updated.map { it.board })
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("待办", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Box { IconButton(onClick = onSettingsOpen) { Icon(Icons.Default.Settings, "待办设置", tint = Ink) }; DropdownMenu(expanded = settingsOpen, onDismissRequest = onSettingsOpen) { DropdownMenuItem(text = { Text("历史") }, onClick = { onSettingsOpen(); onOpenHistory() }); HorizontalDivider(); DropdownMenuItem(text = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("今天", Modifier.weight(1f)); Checkbox(checked = showToday, onCheckedChange = null, enabled = !showTomorrow) } }, onClick = { if (!showTomorrow) onSetVisible("TODAY", !showToday) }, enabled = !showTomorrow); DropdownMenuItem(text = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("明天", Modifier.weight(1f)); Checkbox(checked = showTomorrow, onCheckedChange = null) } }, onClick = { onSetVisible("TOMORROW", !showTomorrow) }) } } } }
+        if (showToday) item { DailyPageTile("今天", today?.items?.size ?: 0, onClick = { if (today != null) onOpenPage("TODAY") }, onClose = { if (!showTomorrow) onSetVisible("TODAY", false) }) }
+        if (showTomorrow) item { DailyPageTile("明天", tomorrow?.items?.size ?: 0, onClick = { if (tomorrow != null) onOpenPage("TOMORROW") }, onClose = { onSetVisible("TOMORROW", false) }) }
+        if (!showToday && !showTomorrow) item { EmptyHint("点击＋号创建待办", "也可以在右上角设置中重新打开“今天”或“明天”") }
+        if (orderedLegacy.isNotEmpty()) item {
+            val allCollapsed = orderedLegacy.all { !it.board.expanded }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("待办框", color = Muted, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text("收起", color = Muted, fontSize = 13.sp)
+                Checkbox(checked = allCollapsed, onCheckedChange = { collapse -> onSetLegacyExpanded(orderedLegacy.map { it.board }, !collapse) }, modifier = Modifier.size(30.dp))
+            }
+        }
+        items(orderedLegacy, key = { it.board.id }) { board -> ReorderableTodoBoard(board, onToggleItem = onToggleLegacyItem, onToggleBoard = onToggleLegacyBoard, onEdit = { onEditLegacy(board) }, onArchive = { onArchiveLegacy(board) }, onDelete = { onDeleteLegacy(board) }, onMove = { moveLegacy(board, it) }, onDragState = { active -> draggingLegacyId = if (active) board.board.id else null }) }
+    }
+}
+
+@Composable
+private fun DailyPageTile(title: String, count: Int, onClick: () -> Unit, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope(); val actionWidth = 88.dp; val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }; val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))) { Box(Modifier.matchParentSize().background(LightRed), contentAlignment = Alignment.CenterEnd) { Text("关闭", color = DeleteInk, modifier = Modifier.padding(end = 28.dp)) }; Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = LightGreen), modifier = Modifier.fillMaxWidth().offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, amount -> change.consume(); scope.launch { offset.snapTo((offset.value + amount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { if (offset.value < -actionWidthPx / 2) onClose() else scope.launch { offset.animateTo(0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }.clickable(onClick = onClick)) { Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Today, null, tint = Color(0xFF317C52), modifier = Modifier.size(20.dp)); Spacer(Modifier.width(10.dp)); Text(title, color = Ink, fontSize = 17.sp, modifier = Modifier.weight(1f)); Text("$count 条", color = Muted, fontSize = 13.sp); Icon(Icons.Default.ChevronRight, null, tint = Muted) } } }
+}
+
+@Composable
+private fun DailyTodoPage(board: TodoBoardWithItems, onBack: () -> Unit, onToggle: (TodoItem) -> Unit, onToggleImportant: (TodoItem) -> Unit, onDelete: (TodoItem) -> Unit, onEdit: (TodoItem) -> Unit, onReorder: (List<TodoItem>) -> Unit, onExport: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+    var selectedIds by remember(board.board.id) { mutableStateOf(setOf<Long>()) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var draggingItemId by remember(board.board.id) { mutableStateOf<Long?>(null) }
+    val databaseOrder = board.items.sortedWith(compareBy<TodoItem> { it.completed }.thenBy { it.position })
+    var ordered by remember(board.board.id) { mutableStateOf(databaseOrder) }
+    val selecting = selectedIds.isNotEmpty()
+    LaunchedEffect(board.items) { if (draggingItemId == null) ordered = board.items.sortedWith(compareBy<TodoItem> { it.completed }.thenBy { it.position }) }
+    LaunchedEffect(selecting) { onSelectionChanged(selecting) }
+    LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
+    fun move(item: TodoItem, direction: Int) {
+        val from = ordered.indexOfFirst { it.id == item.id }
+        val sameState = ordered.withIndex().filter { it.value.completed == item.completed }
+        val currentInState = sameState.indexOfFirst { it.value.id == item.id }
+        val targetInState = (currentInState + direction).coerceIn(0, sameState.lastIndex)
+        if (from < 0 || currentInState == targetInState) return
+        val target = sameState[targetInState].index
+        val newOrder = ordered.toMutableList()
+        val moved = newOrder.removeAt(from)
+        newOrder.add(target, moved)
+        ordered = newOrder
+        onReorder(newOrder)
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        item { Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) { if (selecting) DailySelectionBar(selectedIds.size, { selectedIds = ordered.map { it.id }.toSet() }, { selectedIds = emptySet() }, { board.items.filter { it.id in selectedIds }.forEach(onDelete); selectedIds = emptySet() }) else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text(board.board.summary, color = Ink, fontSize = 28.sp, modifier = Modifier.weight(1f)); Box { IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "更多") }; DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) { DropdownMenuItem(text = { Text("导出") }, onClick = { menuOpen = false; onExport() }) } } } } }
+        if (ordered.isEmpty()) item { EmptyHint("还没有事务", "点击右下角＋，添加一件要做的事") }
+        items(ordered, key = { it.id }) { item ->
+            SwipeRevealDeleteRow(enabled = draggingItemId == null && !selecting, onDelete = { onDelete(item) }) {
+                DailyTodoCard(item, selecting, item.id in selectedIds, { selectedIds = selectedIds.toggle(item.id) }, { onToggle(item) }, { onToggleImportant(item) }, { onEdit(item) }, { direction -> selectedIds = emptySet(); move(item, direction) }, { active -> draggingItemId = if (active) item.id else null })
+            }
+        }
+    }
+}
+@Composable
+private fun DailySelectionBar(count: Int, onSelectAll: () -> Unit, onCancel: () -> Unit, onDelete: () -> Unit) { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFFE7E7EC)).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Text("已选 $count 项", color = Ink, modifier = Modifier.weight(1f)); Text("全选", color = Blue, modifier = Modifier.clickable(onClick = onSelectAll).padding(6.dp)); Text("取消", color = Ink, modifier = Modifier.clickable(onClick = onCancel).padding(6.dp)); Text("删除", color = DeleteInk, modifier = Modifier.clickable(onClick = onDelete).padding(6.dp)) } }
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun DailyTodoCard(item: TodoItem, selecting: Boolean, selected: Boolean, onSelect: () -> Unit, onToggle: () -> Unit, onToggleImportant: () -> Unit, onEdit: () -> Unit, onMove: (Int) -> Unit, onDragState: (Boolean) -> Unit) {
+    var expanded by remember(item.id) { mutableStateOf(false) }
+    var distance by remember(item.id) { mutableStateOf(0f) }
+    var dragOffsetY by remember(item.id) { mutableStateOf(0f) }
+    var holding by remember(item.id) { mutableStateOf(false) }
+    var ignoreNextClick by remember(item.id) { mutableStateOf(false) }
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = when {
+            holding -> Color(0xFFF0F0F3)
+            item.important -> SoftBlue
+            else -> Color.White
+        }),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (holding) 12.dp else 0.dp),
+        modifier = Modifier.fillMaxWidth()
+            .zIndex(if (holding) 1f else 0f)
+            .offset { IntOffset(0, dragOffsetY.roundToInt()) }
+            .pointerInput(item.id) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { ignoreNextClick = true; holding = true; distance = 0f; dragOffsetY = 0f; onDragState(true); onSelect() },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        dragOffsetY += amount.y
+                        distance += amount.y
+                        if (kotlin.math.abs(distance) > 60f) {
+                            onMove(if (distance > 0) 1 else -1)
+                            distance = 0f
+                        }
+                    },
+                    onDragEnd = { holding = false; dragOffsetY = 0f; onDragState(false) },
+                    onDragCancel = { holding = false; dragOffsetY = 0f; onDragState(false) }
+                )
+            }
+            .clickable(onClick = { if (ignoreNextClick) ignoreNextClick = false else if (selecting) onSelect() else expanded = !expanded })
+    ) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.Top) {
+            IconButton(onClick = onToggleImportant, modifier = Modifier.size(36.dp)) {
+                Icon(if (item.important) Icons.Default.Star else Icons.Default.StarBorder, "重要", tint = if (item.important) Color(0xFFFFB300) else Muted)
+            }
+            IconButton(onClick = { if (!selecting) onToggle() else onSelect() }, modifier = Modifier.size(36.dp)) {
+                Box(Modifier.size(20.dp).clip(RoundedCornerShape(4.dp)).background(if (item.completed) Blue else Color(0xFFE3E4E9)), contentAlignment = Alignment.Center) {
+                    if (item.completed) Icon(Icons.Default.CheckCircle, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                }
+            }
+            Column(Modifier.weight(1f).padding(top = 7.dp)) {
+                Text(item.text, color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null, maxLines = if (expanded) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
+                formatTodoReminder(item)?.let { Text(it, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)) }
+                if (expanded && !selecting) Text("编辑", color = Blue, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp).clickable(onClick = onEdit))
+            }
+            if (selecting) SelectionMarker(selected)
+        }
+    }
+}
+
+@Composable
+private fun TodoTaskDialog(item: TodoItem?, pageType: String, onDismiss: () -> Unit, onSave: (String, Long?, Int, Int) -> Unit) {
+    val context = LocalContext.current; var text by remember(item?.id) { mutableStateOf(item?.text.orEmpty()) }; var reminderEnabled by remember(item?.id) { mutableStateOf(item?.reminderAt != null) }; val pageDate = remember(pageType) { if (pageType == "TOMORROW") LocalDate.now().plusDays(1) else LocalDate.now() }; var taskTime by remember(item?.id, pageType) { mutableStateOf(item?.reminderAt ?: pageDate.atTime(9, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()) }; var hours by remember(item?.id) { mutableStateOf(item?.reminderHours?.takeIf { it > 0 }?.toString().orEmpty()) }; var minutes by remember(item?.id) { mutableStateOf(item?.reminderMinutes?.takeIf { it > 0 }?.toString().orEmpty()) }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(if (item == null) "新增事务" else "编辑事务") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), label = { Text("事务内容") }, minLines = 3); Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it }); Text("设置提醒时间") }; if (reminderEnabled) { OutlinedButton(onClick = { val c = Calendar.getInstance().apply { timeInMillis = taskTime }; TimePickerDialog(context, { _, h, m -> taskTime = pageDate.atTime(h, m).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show() }) { Text("时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(taskTime))}") }; Text("提前提醒", color = Muted, fontSize = 13.sp); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { NumberField("时", hours, 99) { hours = it }; NumberField("分", minutes, 59) { minutes = it } } } } }, confirmButton = { Button(onClick = { if (text.isNotBlank()) onSave(text.trim(), taskTime.takeIf { reminderEnabled }, hours.toIntOrNull() ?: 0, minutes.toIntOrNull() ?: 0) }) { Text(if (item == null) "创建" else "保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
+}
+@Composable
 private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onEdit: (TodoBoardWithItems) -> Unit, onArchive: (List<TodoBoardWithItems>) -> Unit, onDelete: (List<TodoBoardWithItems>) -> Unit, onShowHistory: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     val selecting = selectedIds.isNotEmpty()
@@ -594,7 +789,7 @@ private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) 
     LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("待办", fontSize = 30.sp, color = Ink); Text("记录事情和大概时间；准时提醒请使用时间表", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }; IconButton(onClick = onShowHistory) { Icon(Icons.Default.MenuBook, "打开历史", tint = Ink) } } }
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("待办", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); IconButton(onClick = onShowHistory) { Icon(Icons.Default.MenuBook, "打开历史", tint = Ink) } } }
             if (boards.isEmpty()) item { EmptyHint("还没有待办", "点击＋创建一个待办框，再在里面连续添加小事项") }
             items(boards, key = { it.board.id }) { board ->
                 val card: @Composable () -> Unit = { TodoBoardCard(board, history = false, selected = board.board.id in selectedIds, selecting = selecting, toggleItem = toggleItem, toggleBoard = toggleBoard, onToggle = { selectedIds = selectedIds.toggle(board.board.id) }, onLongSelect = { selectedIds = setOf(board.board.id) }) }
@@ -623,31 +818,76 @@ private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Un
     }
 }
 
+@Composable
+private fun ReorderableTodoBoard(
+    board: TodoBoardWithItems,
+    onToggleItem: (TodoItem) -> Unit,
+    onToggleBoard: (TodoBoard) -> Unit,
+    onEdit: () -> Unit,
+    onArchive: () -> Unit,
+    onDelete: () -> Unit,
+    onMove: (Int) -> Unit,
+    onDragState: (Boolean) -> Unit
+) {
+    var holding by remember(board.board.id) { mutableStateOf(false) }
+    var distance by remember(board.board.id) { mutableStateOf(0f) }
+    var dragOffsetY by remember(board.board.id) { mutableStateOf(0f) }
+    val dragModifier = if (!board.board.expanded) {
+        Modifier.zIndex(if (holding) 1f else 0f)
+            .offset { IntOffset(0, dragOffsetY.roundToInt()) }
+            .pointerInput(board.board.id) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { holding = true; distance = 0f; dragOffsetY = 0f; onDragState(true) },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        dragOffsetY += amount.y
+                        distance += amount.y
+                        if (kotlin.math.abs(distance) > 60f) {
+                            onMove(if (distance > 0) 1 else -1)
+                            distance = 0f
+                        }
+                    },
+                    onDragEnd = { holding = false; dragOffsetY = 0f; onDragState(false) },
+                    onDragCancel = { holding = false; dragOffsetY = 0f; onDragState(false) }
+                )
+            }
+    } else Modifier
+    ThreeActionSwipeRow(enabled = !holding, onEdit = onEdit, onArchive = onArchive, onDelete = onDelete) {
+        TodoBoardCard(board, history = false, selected = false, selecting = false, toggleItem = onToggleItem, toggleBoard = onToggleBoard, onToggle = {}, onLongSelect = {}, dragging = holding, modifier = dragModifier, enableLongSelection = false)
+    }
+}
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit) {
+private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit, dragging: Boolean = false, modifier: Modifier = Modifier, enableLongSelection: Boolean = true) {
     val done = board.items.count { it.completed }
     val overdue = !history && board.board.dueDate?.let { it < startOfToday() && done < board.items.size } == true
     val cardInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(interactionSource = cardInteraction, indication = null, onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)) {
-        Column(Modifier.padding(16.dp)) {
+    val clickBehavior = if (enableLongSelection) {
+        Modifier.combinedClickable(interactionSource = cardInteraction, indication = null, onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)
+    } else {
+        Modifier.clickable(interactionSource = cardInteraction, indication = null) { toggleBoard(board.board) }
+    }
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().then(clickBehavior)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
-            if (board.board.dueDate != null || !history) { Spacer(Modifier.height(6.dp)); Text(when { history && board.board.dueDate != null -> "截止时间：${formatDateOnly(board.board.dueDate)}"; overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp)) }
+            if (board.board.dueDate != null || !history) { Spacer(Modifier.height(4.dp)); Text(when { history && board.board.dueDate != null -> "截止时间：${formatDateOnly(board.board.dueDate)}"; overdue -> "已逾期 · 截止：${formatDateOnly(board.board.dueDate!!)}"; board.board.dueDate != null -> "截止：${formatDateOnly(board.board.dueDate)}"; else -> "未设置截止日期" }, color = if (overdue) Color(0xFFB04A35) else Muted, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp)) }
             if (board.board.expanded) { HorizontalDivider(Modifier.padding(vertical = 10.dp)); board.items.sortedBy { it.position }.forEach { item -> Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = item.completed, onCheckedChange = if (history || selecting) null else { _: Boolean -> toggleItem(item) }); val parts = item.text.split("\n", limit = 2); Column { Text(parts.first(), color = if (item.completed) Muted else Ink, textDecoration = if (item.completed) TextDecoration.LineThrough else null); if (parts.size > 1) Text(parts[1], color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) } } } }
         }
     }
 }
 @Composable
-private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -> Unit, onDelete: (DiaryEntry) -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -> Unit, onDelete: (DiaryEntry) -> Unit, onExport: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     var showCalendar by remember { mutableStateOf(false) }
+    var diarySettingsOpen by remember { mutableStateOf(false) }
     var month by remember { mutableStateOf(YearMonth.now()) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(selecting) { onSelectionChanged(selecting) }
     LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("日记", fontSize = 30.sp, color = Ink); Text("每天一篇，标题固定为日期", color = Muted, fontSize = 13.sp) }; IconButton(onClick = { showCalendar = !showCalendar }) { Icon(Icons.Default.CalendarMonth, "打开日历", tint = Blue) } } }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("日记", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Box { IconButton(onClick = { diarySettingsOpen = true }) { Icon(Icons.Default.Settings, "日记设置", tint = Ink) }; DropdownMenu(expanded = diarySettingsOpen, onDismissRequest = { diarySettingsOpen = false }) { DropdownMenuItem(text = { Text("背景") }, onClick = { diarySettingsOpen = false }); DropdownMenuItem(text = { Text("导出") }, onClick = { diarySettingsOpen = false; onExport() }) } }; IconButton(onClick = { showCalendar = !showCalendar }) { Icon(Icons.Default.CalendarMonth, "打开日历", tint = Blue) } } }
             if (showCalendar) item { DiaryCalendar(month, entries.map { it.day }.toSet(), onPrev = { month = month.minusMonths(1) }, onNext = { month = month.plusMonths(1) }, onSelect = { day -> onOpen(day, entries.firstOrNull { it.day == day }) }) }
             if (entries.isEmpty()) item { EmptyHint("今天想记下什么？", "点击＋写下今天的日记") }
             items(entries, key = { it.id }) { entry ->
@@ -662,7 +902,7 @@ private fun DiaryScreen(entries: List<DiaryEntry>, onOpen: (Long, DiaryEntry?) -
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -692,43 +932,106 @@ private fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrev: () ->
 }
 
 @Composable
-private fun MemoryScreen(categories: List<MemoryCategoryWithEntries>, selectedId: Long?, onBack: () -> Unit, onOpen: (Long) -> Unit, onEditCategory: (MemoryCategory) -> Unit, onDeleteCategory: (MemoryCategory) -> Unit, onEditEntry: (MemoryEntry) -> Unit, onDeleteEntry: (MemoryEntry) -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+private fun MemoryScreen(categories: List<MemoryCategoryWithEntries>, selectedId: Long?, onBack: () -> Unit, onOpen: (Long) -> Unit, onEditCategory: (MemoryCategory) -> Unit, onDeleteCategory: (MemoryCategory) -> Unit, onEditEntry: (MemoryEntry) -> Unit, onDeleteEntry: (MemoryEntry) -> Unit, onReorderCategories: (List<MemoryCategory>) -> Unit, onReorderEntries: (List<MemoryEntry>) -> Unit, onExport: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     val selected = categories.firstOrNull { it.category.id == selectedId }
+    var memorySettingsOpen by remember { mutableStateOf(false) }
     var selectedIds by remember(selectedId) { mutableStateOf(setOf<Long>()) }
+    var draggingId by remember(selectedId) { mutableStateOf<Long?>(null) }
+    var orderedCategories by remember { mutableStateOf(categories.sortedWith(compareBy<MemoryCategoryWithEntries> { it.category.position }.thenByDescending { it.category.createdAt })) }
+    var orderedEntries by remember(selectedId) { mutableStateOf(selected?.entries?.sortedWith(compareBy<MemoryEntry> { it.position }.thenByDescending { it.createdAt }) ?: emptyList()) }
     val selecting = selectedIds.isNotEmpty()
+    LaunchedEffect(categories, selectedId) { if (selectedId == null && draggingId == null) orderedCategories = categories.sortedWith(compareBy<MemoryCategoryWithEntries> { it.category.position }.thenByDescending { it.category.createdAt }) }
+    LaunchedEffect(selected?.entries, selectedId) { if (selectedId != null && draggingId == null) orderedEntries = selected?.entries?.sortedWith(compareBy<MemoryEntry> { it.position }.thenByDescending { it.createdAt }) ?: emptyList() }
     LaunchedEffect(selecting) { onSelectionChanged(selecting) }
     LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { if (selected == null) { Text("记忆", fontSize = 30.sp, color = Ink); Text("把值得留下的事情收进分类", color = Muted, fontSize = 13.sp) } else Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text(selected.category.name, fontSize = 28.sp, color = Ink) } }
-            if (selected == null) {
-                if (categories.isEmpty()) item { EmptyHint("还没有记忆分类", "点击＋，创建如「旅行」「学习」这样的分类") }
-                items(categories, key = { it.category.id }) { category ->
-                    val card: @Composable () -> Unit = { MemoryCategoryCard(category, selected = category.category.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(category.category.id) }, onLongSelect = { selectedIds = setOf(category.category.id) }, onOpen = { onOpen(category.category.id) }) }
-                    if (selecting) card() else SwipeActionRow(onEdit = { onEditCategory(category.category) }, onDelete = { onDeleteCategory(category.category) }) { card() }
-                }
-            } else {
-                if (selected.entries.isEmpty()) item { EmptyHint("这个分类还没有内容", "点击＋，记录一件具体的记忆") }
-                items(selected.entries, key = { it.id }) { entry ->
-                    val card: @Composable () -> Unit = { MemoryEntryCard(entry, selected = entry.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(entry.id) }, onLongSelect = { selectedIds = setOf(entry.id) }, onOpen = { onEditEntry(entry) }) }
-                    if (selecting) card() else SwipeActionRow(onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) }) { card() }
-                }
+    fun moveCategory(category: MemoryCategoryWithEntries, direction: Int) {
+        val from = orderedCategories.indexOfFirst { it.category.id == category.category.id }
+        val to = (from + direction).coerceIn(0, orderedCategories.lastIndex)
+        if (from < 0 || from == to) return
+        val changed = orderedCategories.toMutableList(); changed.add(to, changed.removeAt(from)); orderedCategories = changed
+        onReorderCategories(changed.map { it.category })
+    }
+    fun moveEntry(entry: MemoryEntry, direction: Int) {
+        val from = orderedEntries.indexOfFirst { it.id == entry.id }
+        val to = (from + direction).coerceIn(0, orderedEntries.lastIndex)
+        if (from < 0 || from == to) return
+        val changed = orderedEntries.toMutableList(); changed.add(to, changed.removeAt(from)); orderedEntries = changed
+        onReorderEntries(changed)
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
+                if (selecting) {
+                    val allIds = if (selected == null) orderedCategories.map { it.category.id } else orderedEntries.map { it.id }
+                    DailySelectionBar(selectedIds.size, { selectedIds = allIds.toSet() }, { selectedIds = emptySet() }, {
+                        if (selected == null) orderedCategories.filter { it.category.id in selectedIds }.forEach { onDeleteCategory(it.category) }
+                        else orderedEntries.filter { it.id in selectedIds }.forEach(onDeleteEntry)
+                        selectedIds = emptySet()
+                    })
+                } else if (selected == null) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("记忆", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f))
+                        Box { IconButton(onClick = { memorySettingsOpen = true }) { Icon(Icons.Default.Settings, "记忆设置", tint = Ink) }; DropdownMenu(expanded = memorySettingsOpen, onDismissRequest = { memorySettingsOpen = false }) { DropdownMenuItem(text = { Text("背景") }, onClick = { memorySettingsOpen = false }); DropdownMenuItem(text = { Text("导出") }, onClick = { memorySettingsOpen = false; onExport() }) } }
+                    }
+                } else Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text(selected.category.name, fontSize = 28.sp, color = Ink) }
             }
         }
-        if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { if (selected == null) categories.filter { it.category.id in selectedIds }.forEach { onDeleteCategory(it.category) } else selected.entries.filter { it.id in selectedIds }.forEach(onDeleteEntry); selectedIds = emptySet() })
+        if (selected == null) {
+            if (orderedCategories.isEmpty()) item { EmptyHint("还没有记忆分类", "点击＋，创建如「旅行」「学习」这样的分类") }
+            items(orderedCategories, key = { it.category.id }) { category ->
+                ReorderableMemoryCategory(category, category.category.id in selectedIds, selecting, { selectedIds = selectedIds.toggle(category.category.id) }, { selectedIds = setOf(category.category.id) }, { onOpen(category.category.id) }, { onEditCategory(category.category) }, { onDeleteCategory(category.category) }, { direction -> selectedIds = emptySet(); moveCategory(category, direction) }, { active -> draggingId = if (active) category.category.id else null })
+            }
+        } else {
+            if (orderedEntries.isEmpty()) item { EmptyHint("这个分类还没有内容", "点击＋，记录一件具体的记忆") }
+            items(orderedEntries, key = { it.id }) { entry ->
+                ReorderableMemoryEntry(entry, entry.id in selectedIds, selecting, { selectedIds = selectedIds.toggle(entry.id) }, { selectedIds = setOf(entry.id) }, { onEditEntry(entry) }, { onEditEntry(entry) }, { onDeleteEntry(entry) }, { direction -> selectedIds = emptySet(); moveEntry(entry, direction) }, { active -> draggingId = if (active) entry.id else null })
+            }
+        }
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MemoryCategoryCard(category: MemoryCategoryWithEntries, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Folder, null, tint = Blue); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(category.category.name, color = Ink, fontSize = 18.sp); Text("${category.entries.size} 条记忆", color = Muted, fontSize = 13.sp) }; if (selecting) SelectionMarker(selected) else Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+private fun ReorderableMemoryCategory(category: MemoryCategoryWithEntries, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onMove: (Int) -> Unit, onDragState: (Boolean) -> Unit) {
+    var holding by remember(category.category.id) { mutableStateOf(false) }
+    var distance by remember(category.category.id) { mutableStateOf(0f) }
+    var dragOffsetY by remember(category.category.id) { mutableStateOf(0f) }
+    var ignoreNextClick by remember(category.category.id) { mutableStateOf(false) }
+    val dragModifier = Modifier.zIndex(if (holding) 1f else 0f).offset { IntOffset(0, dragOffsetY.roundToInt()) }.pointerInput(category.category.id) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = { ignoreNextClick = true; holding = true; distance = 0f; dragOffsetY = 0f; onDragState(true); onLongSelect() },
+            onDrag = { change, amount -> change.consume(); dragOffsetY += amount.y; distance += amount.y; if (kotlin.math.abs(distance) > 60f) { onMove(if (distance > 0) 1 else -1); distance = 0f } },
+            onDragEnd = { holding = false; dragOffsetY = 0f; onDragState(false) },
+            onDragCancel = { holding = false; dragOffsetY = 0f; onDragState(false) }
+        )
+    }
+    SwipeActionRow(enabled = !holding && !selecting, onEdit = onEdit, onDelete = onDelete) { MemoryCategoryCard(category, selected, selecting, onToggle, onOpen, ignoreNextClick, { ignoreNextClick = false }, holding, dragModifier) }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
+private fun ReorderableMemoryEntry(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onLongSelect: () -> Unit, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onMove: (Int) -> Unit, onDragState: (Boolean) -> Unit) {
+    var holding by remember(entry.id) { mutableStateOf(false) }
+    var distance by remember(entry.id) { mutableStateOf(0f) }
+    var dragOffsetY by remember(entry.id) { mutableStateOf(0f) }
+    var ignoreNextClick by remember(entry.id) { mutableStateOf(false) }
+    val dragModifier = Modifier.zIndex(if (holding) 1f else 0f).offset { IntOffset(0, dragOffsetY.roundToInt()) }.pointerInput(entry.id) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = { ignoreNextClick = true; holding = true; distance = 0f; dragOffsetY = 0f; onDragState(true); onLongSelect() },
+            onDrag = { change, amount -> change.consume(); dragOffsetY += amount.y; distance += amount.y; if (kotlin.math.abs(distance) > 60f) { onMove(if (distance > 0) 1 else -1); distance = 0f } },
+            onDragEnd = { holding = false; dragOffsetY = 0f; onDragState(false) },
+            onDragCancel = { holding = false; dragOffsetY = 0f; onDragState(false) }
+        )
+    }
+    SwipeActionRow(enabled = !holding && !selecting, onEdit = onEdit, onDelete = onDelete) { MemoryEntryCard(entry, selected, selecting, onToggle, onOpen, ignoreNextClick, { ignoreNextClick = false }, holding, dragModifier) }
+}
+
+@Composable
+private fun MemoryCategoryCard(category: MemoryCategoryWithEntries, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, ignoreNextClick: Boolean, onIgnoredClick: () -> Unit, dragging: Boolean, modifier: Modifier) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().clickable { if (ignoreNextClick) onIgnoredClick() else if (selecting) onToggle() else onOpen() }) { Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Folder, null, tint = Blue); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(category.category.name, color = Ink, fontSize = 18.sp); Text("${category.entries.size} 条记忆", color = Muted, fontSize = 13.sp) }; if (selecting) SelectionMarker(selected) } }
+}
+
+@Composable
+private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Boolean, onToggle: () -> Unit, onOpen: () -> Unit, ignoreNextClick: Boolean, onIgnoredClick: () -> Unit, dragging: Boolean, modifier: Modifier) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().clickable { if (ignoreNextClick) onIgnoredClick() else if (selecting) onToggle() else onOpen() }) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
 }
 @Composable
 private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
@@ -821,22 +1124,55 @@ private fun SelectionActionBar(onCancel: () -> Unit, onArchive: (() -> Unit)? = 
 }
 
 @Composable
-private fun ThreeActionSwipeRow(onEdit: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
+private fun ThreeActionSwipeRow(enabled: Boolean = true, onEdit: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
     val actionWidth = 264.dp
     val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }
     val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    val swipeEnabled by rememberUpdatedState(enabled)
+    LaunchedEffect(enabled) { if (!enabled) offset.snapTo(0f) }
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
-        Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.End) {
+        if (enabled) Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.End) {
             Box(Modifier.width(88.dp).fillMaxHeight().background(LightBlue).clickable { scope.launch { offset.animateTo(0f) }; onEdit() }, contentAlignment = Alignment.Center) { Text("更改", color = Ink, fontSize = 15.sp) }
             Box(Modifier.width(88.dp).fillMaxHeight().background(LightYellow).clickable { scope.launch { offset.animateTo(0f) }; onArchive() }, contentAlignment = Alignment.Center) { Text("归档", color = Ink, fontSize = 15.sp) }
             Box(Modifier.width(88.dp).fillMaxHeight().background(LightRed).clickable { onDelete() }, contentAlignment = Alignment.Center) { Text("删除", color = DeleteInk, fontSize = 15.sp) }
         }
-        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, dragAmount -> change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }) { content() }
+        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) {
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { change, dragAmount -> if (swipeEnabled) { change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } } },
+                onDragEnd = { if (swipeEnabled) scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } },
+                onDragCancel = { if (swipeEnabled) scope.launch { offset.animateTo(0f) } }
+            )
+        }) { content() }
     }
 }
 
 @Composable
+private fun SwipeRevealDeleteRow(enabled: Boolean, onDelete: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val actionWidth = 88.dp
+    val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }
+    val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    val swipeEnabled by rememberUpdatedState(enabled)
+    LaunchedEffect(enabled) { if (!enabled) offset.snapTo(0f) }
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))) {
+        Box(
+            Modifier.matchParentSize()
+                .background(if (enabled) LightRed else Color.Transparent)
+                .clickable(enabled = enabled) { scope.launch { offset.animateTo(0f) }; onDelete() },
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            if (enabled) Text("删除", color = DeleteInk, modifier = Modifier.padding(end = 26.dp))
+        }
+        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) {
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { change, dragAmount -> if (swipeEnabled) { change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } } },
+                onDragEnd = { if (swipeEnabled) scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } },
+                onDragCancel = { if (swipeEnabled) scope.launch { offset.animateTo(0f) } }
+            )
+        }) { content() }
+    }
+}@Composable
 private fun SwipeDeleteRow(onDelete: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
     val actionWidth = 88.dp
@@ -849,17 +1185,25 @@ private fun SwipeDeleteRow(onDelete: () -> Unit, content: @Composable () -> Unit
 }
 
 @Composable
-private fun SwipeActionRow(onEdit: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
+private fun SwipeActionRow(enabled: Boolean = true, onEdit: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
     val actionWidth = 176.dp
     val actionWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { actionWidth.toPx() }
     val offset = remember { androidx.compose.animation.core.Animatable(0f) }
+    val swipeEnabled by rememberUpdatedState(enabled)
+    LaunchedEffect(enabled) { if (!enabled) offset.snapTo(0f) }
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))) {
-        Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.End) {
+        if (enabled) Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.End) {
             Box(Modifier.width(88.dp).fillMaxHeight().background(LightBlue).clickable { scope.launch { offset.animateTo(0f) }; onEdit() }, contentAlignment = Alignment.Center) { Text("更改", color = Ink, fontSize = 15.sp) }
             Box(Modifier.width(88.dp).fillMaxHeight().background(LightRed).clickable { onDelete() }, contentAlignment = Alignment.Center) { Text("删除", color = DeleteInk, fontSize = 15.sp) }
         }
-        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, dragAmount -> change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }) { content() }
+        Box(Modifier.offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) {
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { change, dragAmount -> if (swipeEnabled) { change.consume(); scope.launch { offset.snapTo((offset.value + dragAmount).coerceIn(-actionWidthPx, 0f)) } } },
+                onDragEnd = { if (swipeEnabled) scope.launch { offset.animateTo(if (offset.value < -actionWidthPx / 2) -actionWidthPx else 0f) } },
+                onDragCancel = { if (swipeEnabled) scope.launch { offset.animateTo(0f) } }
+            )
+        }) { content() }
     }
 }
 @Composable
@@ -877,6 +1221,12 @@ private fun formatScheduleDate(event: ScheduleEvent): String {
     val hasExactTime = calendar.get(Calendar.HOUR_OF_DAY) != 0 || calendar.get(Calendar.MINUTE) != 0
     return if (hasExactTime) "${formatDateOnly(event.eventAt)}  ${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(event.eventAt))}" else formatDateOnly(event.eventAt)
 }
+private fun formatTodoReminder(item: TodoItem): String? {
+    val time = item.reminderAt ?: return null
+    val advance = listOf(item.reminderHours.takeIf { it > 0 }?.let { "${it}小时" }, item.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }).filterNotNull().joinToString(" ")
+    return "提醒：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(time))}" + if (advance.isBlank()) "" else " · 提前 $advance"
+}
+
 private fun formatReminder(event: ScheduleEvent): String? {
     val parts = listOf(event.reminderDays.takeIf { it > 0 }?.let { "${it}天" }, event.reminderHours.takeIf { it > 0 }?.let { "${it}小时" }, event.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }).filterNotNull()
     return parts.takeIf { it.isNotEmpty() }?.let { "提前 ${it.joinToString(" ")}提醒" }

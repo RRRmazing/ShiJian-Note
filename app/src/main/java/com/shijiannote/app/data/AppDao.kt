@@ -26,22 +26,97 @@ interface AppDao {
     @Query("UPDATE schedule_events SET archived = 1 WHERE archived = 0 AND eventAt < :now") suspend fun archiveExpiredSchedules(now: Long)
 
     @Transaction
-    @Query("SELECT * FROM todo_boards WHERE archived = 0 ORDER BY CASE WHEN dueDate IS NULL THEN 1 ELSE 0 END, dueDate ASC, createdAt DESC")
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 ORDER BY CASE WHEN boardType = 'LIST' THEN 0 ELSE 1 END, position ASC, createdAt DESC")
     fun observeTodoBoards(): Flow<List<TodoBoardWithItems>>
 
     @Transaction
     @Query("SELECT * FROM todo_boards WHERE archived = 1 ORDER BY dueDate DESC, createdAt DESC")
     fun observeArchivedTodoBoards(): Flow<List<TodoBoardWithItems>>
 
+    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM todo_boards WHERE archived = 0 AND boardType = 'LIST'") suspend fun nextTodoBoardPosition(): Int
+    @Query("UPDATE todo_boards SET position = :position WHERE id = :boardId") suspend fun setTodoBoardPosition(boardId: Long, position: Int)
+    @Query("UPDATE todo_boards SET expanded = :expanded WHERE id IN (:ids)") suspend fun setTodoBoardsExpanded(ids: List<Long>, expanded: Boolean)
+
     @Insert suspend fun insertTodoBoard(board: TodoBoard): Long
-    @Insert suspend fun insertTodoItems(items: List<TodoItem>)
+    @Insert suspend fun insertTodoItems(items: List<TodoItem>): List<Long>
     @Update suspend fun updateTodoBoard(board: TodoBoard)
     @Update suspend fun updateTodoItem(item: TodoItem)
+    @Delete suspend fun deleteTodoItem(item: TodoItem)
     @Query("DELETE FROM todo_items WHERE boardId = :boardId") suspend fun deleteTodoItemsForBoard(boardId: Long)
     @Delete suspend fun deleteTodoBoard(board: TodoBoard)
     @Query("UPDATE todo_boards SET archived = 1 WHERE id IN (:ids)") suspend fun archiveTodoBoards(ids: List<Long>)
     @Query("DELETE FROM todo_boards WHERE id IN (:ids)") suspend fun deleteTodoBoards(ids: List<Long>)
     @Query("UPDATE todo_boards SET archived = 1 WHERE archived = 0 AND dueDate IS NOT NULL AND dueDate < :today") suspend fun archiveExpiredTodoBoards(today: Long)
+
+    @Transaction
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 AND boardType IN ('TODAY', 'TOMORROW') ORDER BY CASE boardType WHEN 'TODAY' THEN 0 ELSE 1 END")
+    fun observeDailyTodoBoards(): Flow<List<TodoBoardWithItems>>
+
+    @Query("SELECT * FROM daily_todo_preferences WHERE id = 1")
+    fun observeDailyTodoPreferences(): Flow<DailyTodoPreferences?>
+
+    @Query("SELECT * FROM daily_todo_preferences WHERE id = 1")
+    suspend fun getDailyTodoPreferences(): DailyTodoPreferences?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveDailyTodoPreferences(preferences: DailyTodoPreferences)
+
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 AND boardType = :type LIMIT 1")
+    suspend fun findDailyBoard(type: String): TodoBoard?
+
+    @Query("SELECT COUNT(*) FROM todo_items WHERE boardId = :boardId")
+    suspend fun countTodoItems(boardId: Long): Int
+
+    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM todo_items WHERE boardId = :boardId")
+    suspend fun nextTodoPosition(boardId: Long): Int
+
+    @Query("SELECT COALESCE(MIN(position), 0) - 1 FROM todo_items WHERE boardId = :boardId")
+    suspend fun topTodoPosition(boardId: Long): Int
+
+    @Query("UPDATE todo_items SET completed = :completed, position = :position WHERE id = :itemId")
+    suspend fun setTodoCompletion(itemId: Long, completed: Boolean, position: Int)
+
+    @Query("UPDATE todo_items SET important = NOT important WHERE id = :itemId")
+    suspend fun toggleTodoImportant(itemId: Long)
+
+    @Query("UPDATE todo_items SET reminderTriggered = 1 WHERE id = :itemId")
+    suspend fun markTodoReminded(itemId: Long)
+
+    @Query("UPDATE todo_items SET position = :position WHERE id = :itemId")
+    suspend fun setTodoPosition(itemId: Long, position: Int)
+
+    @Transaction
+    suspend fun prepareDailyPages(today: Long) {
+        val preferences = getDailyTodoPreferences() ?: DailyTodoPreferences(lastRolloverDay = today).also { saveDailyTodoPreferences(it) }
+        if (preferences.showToday && findDailyBoard("TODAY") == null) insertTodoBoard(TodoBoard(summary = "今天", boardType = "TODAY"))
+        if (preferences.showTomorrow && findDailyBoard("TOMORROW") == null) insertTodoBoard(TodoBoard(summary = "明天", boardType = "TOMORROW"))
+    }
+
+    /** One idempotent daily step. Its caller persists the checkpoint only after this returns. */
+    @Transaction
+    suspend fun rollDailyPages(historyTitle: String) {
+        val preferences = getDailyTodoPreferences() ?: return
+        val todayBoard = findDailyBoard("TODAY")
+        if (todayBoard != null) {
+            if (countTodoItems(todayBoard.id) > 0) updateTodoBoard(todayBoard.copy(summary = historyTitle, boardType = "HISTORY", archived = true))
+            else deleteTodoBoard(todayBoard)
+        }
+        val tomorrowBoard = findDailyBoard("TOMORROW")
+        if (preferences.showToday && tomorrowBoard != null) updateTodoBoard(tomorrowBoard.copy(summary = "今天", boardType = "TODAY"))
+        if (preferences.showTomorrow) {
+            if (findDailyBoard("TOMORROW") == null) insertTodoBoard(TodoBoard(summary = "明天", boardType = "TOMORROW"))
+        }
+    }
+
+    @Transaction
+    suspend fun setDailyPageVisible(type: String, visible: Boolean) {
+        val preferences = getDailyTodoPreferences() ?: DailyTodoPreferences().also { saveDailyTodoPreferences(it) }
+        val updated = if (type == "TODAY") preferences.copy(showToday = visible, showTomorrow = if (visible) preferences.showTomorrow else false) else preferences.copy(showTomorrow = visible, showToday = if (visible) true else preferences.showToday)
+        saveDailyTodoPreferences(updated)
+        if (!visible) findDailyBoard(type)?.let { deleteTodoBoard(it) }
+        if (visible && findDailyBoard(type) == null) insertTodoBoard(TodoBoard(summary = if (type == "TODAY") "今天" else "明天", boardType = type))
+        if (type == "TOMORROW" && visible && findDailyBoard("TODAY") == null) insertTodoBoard(TodoBoard(summary = "今天", boardType = "TODAY"))
+    }
 
     @Query("SELECT * FROM diary_entries ORDER BY day DESC")
     fun observeDiaries(): Flow<List<DiaryEntry>>
@@ -50,9 +125,13 @@ interface AppDao {
     @Query("DELETE FROM diary_entries WHERE id IN (:ids)") suspend fun deleteDiaries(ids: List<Long>)
 
     @Transaction
-    @Query("SELECT * FROM memory_categories ORDER BY createdAt DESC")
+    @Query("SELECT * FROM memory_categories ORDER BY position ASC, createdAt DESC")
     fun observeMemoryCategories(): Flow<List<MemoryCategoryWithEntries>>
 
+    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM memory_categories") suspend fun nextMemoryCategoryPosition(): Int
+    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM memory_entries WHERE categoryId = :categoryId") suspend fun nextMemoryEntryPosition(categoryId: Long): Int
+    @Query("UPDATE memory_categories SET position = :position WHERE id = :id") suspend fun setMemoryCategoryPosition(id: Long, position: Int)
+    @Query("UPDATE memory_entries SET position = :position WHERE id = :id") suspend fun setMemoryEntryPosition(id: Long, position: Int)
     @Insert suspend fun insertMemoryCategory(category: MemoryCategory): Long
     @Insert suspend fun insertMemoryEntry(entry: MemoryEntry): Long
     @Update suspend fun updateMemoryCategory(category: MemoryCategory)

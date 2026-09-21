@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.shijiannote.app.data.ScheduleEvent
+import com.shijiannote.app.data.TodoItem
 import com.shijiannote.app.data.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,17 +21,40 @@ import kotlinx.coroutines.launch
 
 object ReminderScheduler {
     private const val CHANNEL_ID = "schedule_reminders"
+    private const val TODO_OFFSET = 1_000_000
 
     fun schedule(context: Context, event: ScheduleEvent) {
         if (event.reminderDays == 0 && event.reminderHours == 0 && event.reminderMinutes == 0) return
         requestNotificationPermission(context)
         val remindAt = event.eventAt - event.reminderDays * 86_400_000L - event.reminderHours * 3_600_000L - event.reminderMinutes * 60_000L
         if (remindAt <= System.currentTimeMillis()) return
-        val intent = Intent(context, ReminderReceiver::class.java).putExtra(ReminderReceiver.TITLE, event.title).putExtra(ReminderReceiver.NOTE, event.note).putExtra(ReminderReceiver.ID, event.id)
+        val intent = Intent(context, ReminderReceiver::class.java).putExtra(ReminderReceiver.TITLE, event.title).putExtra(ReminderReceiver.NOTE, event.note).putExtra(ReminderReceiver.ID, event.id).putExtra(ReminderReceiver.TYPE, ReminderReceiver.SCHEDULE)
         val pending = PendingIntent.getBroadcast(context, event.id.toInt(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val manager = context.getSystemService(AlarmManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && manager.canScheduleExactAlarms()) manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, pending)
         else manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, pending)
+    }
+
+    fun scheduleTodo(context: Context, item: TodoItem) {
+        val taskTime = item.reminderAt ?: return
+        val remindAt = taskTime - item.reminderHours * 3_600_000L - item.reminderMinutes * 60_000L
+        if (remindAt <= System.currentTimeMillis()) return
+        requestNotificationPermission(context)
+        val intent = Intent(context, ReminderReceiver::class.java)
+            .putExtra(ReminderReceiver.TITLE, item.text.lineSequence().firstOrNull().orEmpty())
+            .putExtra(ReminderReceiver.NOTE, "待办提醒")
+            .putExtra(ReminderReceiver.ID, item.id)
+            .putExtra(ReminderReceiver.TYPE, ReminderReceiver.TODO)
+        val pending = PendingIntent.getBroadcast(context, TODO_OFFSET + item.id.toInt(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val manager = context.getSystemService(AlarmManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && manager.canScheduleExactAlarms()) manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, pending)
+        else manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, pending)
+    }
+
+    fun cancelTodo(context: Context, itemId: Long) {
+        val intent = Intent(context, ReminderReceiver::class.java)
+        val pending = PendingIntent.getBroadcast(context, TODO_OFFSET + itemId.toInt(), intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+        if (pending != null) context.getSystemService(AlarmManager::class.java).cancel(pending)
     }
 
     fun cancel(context: Context, eventId: Long) {
@@ -57,12 +81,13 @@ object ReminderScheduler {
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getLongExtra(ID, 0)
-        ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), id)
+        val type = intent.getStringExtra(TYPE) ?: SCHEDULE
+        ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), if (type == TODO) 1_000_000 + id else id)
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
-            try { AppDatabase.get(context).appDao().markScheduleReminded(id) }
+            try { if (type == TODO) AppDatabase.get(context).appDao().markTodoReminded(id) else AppDatabase.get(context).appDao().markScheduleReminded(id) }
             finally { pendingResult.finish() }
         }
     }
-    companion object { const val TITLE = "title"; const val NOTE = "note"; const val ID = "id" }
+    companion object { const val TITLE = "title"; const val NOTE = "note"; const val ID = "id"; const val TYPE = "type"; const val SCHEDULE = "schedule"; const val TODO = "todo" }
 }
