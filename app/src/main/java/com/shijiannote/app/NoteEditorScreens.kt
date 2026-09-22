@@ -89,7 +89,8 @@ internal fun MemoryEditorScreen(
     entry: MemoryEntry?,
     onBack: () -> Unit,
     onCreate: (String, String, (MemoryEntry) -> Unit) -> Unit,
-    onSave: (MemoryEntry, String, String) -> Unit
+    onSave: (MemoryEntry, String, String) -> Unit,
+    onDelete: (MemoryEntry) -> Unit
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -99,19 +100,19 @@ internal fun MemoryEditorScreen(
     var creating by remember(entry?.id) { mutableStateOf(false) }
     fun persist(newTitle: String = title, newContent: String = content) {
         val current = savedEntry
-        if (current != null) {
+        if (current != null && (newTitle.isNotBlank() || newContent.isNotBlank())) {
             onSave(current, newTitle, newContent)
         } else if (newTitle.isNotBlank() && !creating) {
             creating = true
             onCreate(newTitle, newContent) { created ->
                 savedEntry = created
                 creating = false
-                onSave(created, title, content)
+                if (title.isBlank() && content.isBlank()) onDelete(created) else onSave(created, title, content)
             }
         }
     }
     fun leaveEditor() {
-        persist()
+        if (title.isBlank() && content.isBlank()) savedEntry?.let(onDelete) else persist()
         keyboard?.hide()
         focusManager.clearFocus()
         onBack()

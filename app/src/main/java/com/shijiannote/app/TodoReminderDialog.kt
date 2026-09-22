@@ -96,7 +96,7 @@ internal fun TodoReminderDialog(
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AssistChip(onClick = { showDatePicker = true }, label = { Text("截止：${formatDeadlineDate(dueDate!!)}") })
-                        IconButton(onClick = { dueDate = null; reminderEnabled = false; days = ""; hours = ""; minutes = "" }) { Icon(Icons.Default.Close, "清除截止日期") }
+                        IconButton(onClick = { dueDate = null }) { Icon(Icons.Default.Close, "清除截止日期") }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it })
@@ -114,7 +114,7 @@ internal fun TodoReminderDialog(
                                 reminderAt = due.timeInMillis
                             }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
                         }) { Text("提醒时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(reminderAt))}") }
-                        Text("提前提醒", color = TodoDialogMuted, fontSize = 13.sp)
+                        Text("提前提醒（默认为准时提醒）", color = TodoDialogMuted, fontSize = 13.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             TodoReminderNumber("天", days, 999) { days = it }
                             TodoReminderNumber("时", hours, 23) { hours = it }
@@ -242,5 +242,3 @@ internal fun formatDeadlineDate(time: Long): String {
     val calendar = Calendar.getInstance().apply { timeInMillis = time }
     return if (calendar.get(Calendar.YEAR) == Calendar.getInstance().get(Calendar.YEAR)) SimpleDateFormat("M月d日", Locale.CHINA).format(Date(time)) else SimpleDateFormat("yyyy年M月d日", Locale.CHINA).format(Date(time))
 }
-
-

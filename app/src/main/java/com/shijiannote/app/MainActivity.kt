@@ -238,7 +238,7 @@ private fun ShiJianNoteApp() {
     var todoImportDueDate by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
-            model.archiveExpiredItems(startOfToday(), System.currentTimeMillis())
+            model.archiveExpiredItems(System.currentTimeMillis())
             model.synchronizeDailyTodosAsync()
             delay(60_000)
         }
@@ -282,11 +282,12 @@ private fun ShiJianNoteApp() {
                 when (tab) {
                     Tab.SCHEDULE -> if (showScheduleHistory) ScheduleHistoryScreen(archivedSchedules, onBack = { showScheduleHistory = false }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest) else ScheduleScreen(schedules, onEdit = { scheduleToEdit = it; showScheduleDialog = true }, onArchive = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.archiveSchedules(events) }, onDelete = { events -> events.forEach { ReminderScheduler.cancel(context, it.id) }; model.deleteSchedules(events) }, onShowHistory = { selectionActive = false; showScheduleHistory = true }, onExport = { exportNotice = "时间表导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.TODO -> when {
-                        showTodoHistory -> TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onDelete = { boards -> boards.forEach { ReminderScheduler.cancelTodoBoard(context, it.board.id) }; model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                        showTodoHistory -> TodoHistoryScreen(archivedTodoBoards, onBack = { showTodoHistory = false }, onToggleBoard = model::toggleTodoBoard, onDelete = { boards -> boards.forEach { ReminderScheduler.cancelTodoBoard(context, it.board.id) }; model.deleteTodos(boards.map { it.board }) }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
+                        dailyTodoPageType == "OVERDUE" -> OverdueTodoScreen(todoBoards.filter { it.board.boardType == "OVERDUE" }, onBack = { dailyTodoPageType = null }, onToggleItem = model::toggleTodo, onToggleBoard = model::toggleTodoBoard, onEdit = { todoToEdit = it; showQuickTodoCreate = true }, onArchive = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.archiveTodos(listOf(it.board)) }, onDelete = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.deleteTodos(listOf(it.board)) }, onReorder = model::reorderTodoBoards, onSetExpanded = model::setTodoBoardsExpanded)
                         dailyTodoPageType != null -> dailyTodoBoards.firstOrNull { it.board.boardType == dailyTodoPageType }?.let { board ->
                             DailyTodoPage(board = board, onBack = { dailyTodoPageType = null }, onToggle = model::toggleTodo, onToggleImportant = model::toggleTodoImportant, onDelete = { item -> ReminderScheduler.cancelTodo(context, item.id); model.deleteDailyTodo(item) }, onEdit = { item -> todoTaskToEdit = item; todoTaskBoardId = board.board.id; showTodoTaskDialog = true }, onReorder = model::reorderTodoItems, onExport = { exportNotice = "待办导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                         } ?: run { dailyTodoPageType = null }
-                        else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showQuickTodoCreate = true }, onArchiveLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
+                        else -> DailyTodoHomeScreen(boards = dailyTodoBoards, legacyBoards = todoBoards.filter { it.board.boardType == "LIST" }, overdueBoards = todoBoards.filter { it.board.boardType == "OVERDUE" }, preferences = dailyTodoPreferences, settingsOpen = showTodoSettings, onSettingsOpen = { showTodoSettings = !showTodoSettings }, onOpenHistory = { selectionActive = false; showTodoHistory = true }, onOpenPage = { dailyTodoPageType = it }, onSetVisible = model::setDailyPageVisible, onToggleLegacyItem = model::toggleTodo, onToggleLegacyBoard = model::toggleTodoBoard, onEditLegacy = { todoToEdit = it; showQuickTodoCreate = true }, onArchiveLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.archiveTodos(listOf(it.board)) }, onDeleteLegacy = { ReminderScheduler.cancelTodoBoard(context, it.board.id); model.deleteTodos(listOf(it.board)) }, onReorderLegacy = model::reorderTodoBoards, onSetLegacyExpanded = model::setTodoBoardsExpanded)
                     }
                     Tab.DIARY -> DiaryScreen(diaries, onOpen = { day, entry -> diaryEditor = DiaryEditorState(day, entry) }, onDelete = model::deleteDiary, onExport = { exportNotice = "日记导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
                     Tab.MEMORY -> MemoryScreen(memories, memoryCategoryId, onBack = { memoryCategoryId = null }, onOpen = { memoryCategoryId = it }, onEditCategory = { categoryToEdit = it; showCategoryDialog = true }, onDeleteCategory = { if (memoryCategoryId == it.id) memoryCategoryId = null; model.deleteMemoryCategory(it) }, onEditEntry = { memoryEditor = MemoryEditorState(it.categoryId, it) }, onDeleteEntry = model::deleteMemoryEntry, onReorderCategories = model::reorderMemoryCategories, onReorderEntries = model::reorderMemoryEntries, onExport = { exportNotice = "记忆导出功能即将支持" }, onSelectionChanged = { selectionActive = it }, cancelSelectionRequest = cancelSelectionRequest)
@@ -315,7 +316,7 @@ private fun ShiJianNoteApp() {
                         aboutPage == AboutPage.SOFTWARE -> SoftwareInfoScreen(onBack = { aboutPage = null })
                         aboutOpen -> AboutScreen(onBack = { aboutOpen = false }, onOpenUsage = { aboutPage = AboutPage.USAGE }, onOpenSoftware = { aboutPage = AboutPage.SOFTWARE })
                         else -> SettingsScreen(
-                            onOpenNotificationSettings = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) },
+                            onOpenAppInfo = { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", context.packageName, null) }) },
                             onOpenAdvancedFeatures = { advancedFeaturesOpen = true },
                             onOpenAbout = { aboutOpen = true }
                         )
@@ -341,7 +342,8 @@ private fun ShiJianNoteApp() {
                         },
                         onSave = { savedEntry, title, content ->
                             model.updateMemoryEntry(savedEntry.copy(title = title, content = content))
-                        }
+                        },
+                        onDelete = model::deleteMemoryEntry
                     )
                 }
         }
@@ -436,7 +438,7 @@ private fun ShiJianNoteApp() {
 }
 
 @Composable
-private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvancedFeatures: () -> Unit, onOpenAbout: () -> Unit) {
+private fun SettingsScreen(onOpenAppInfo: () -> Unit, onOpenAdvancedFeatures: () -> Unit, onOpenAbout: () -> Unit) {
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
@@ -449,13 +451,13 @@ private fun SettingsScreen(onOpenNotificationSettings: () -> Unit, onOpenAdvance
             Card(
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                modifier = Modifier.fillMaxWidth().clickable { onOpenNotificationSettings() }
+                modifier = Modifier.fillMaxWidth().clickable { onOpenAppInfo() }
             ) {
                 Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.NotificationsNone, contentDescription = null, tint = Blue)
                     Spacer(Modifier.width(12.dp))
-                    Text("通知", color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.ChevronRight, contentDescription = "通知设置", tint = Muted)
+                    Text("跳转到应用设置", color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    Icon(Icons.Default.ChevronRight, contentDescription = "应用设置", tint = Muted)
                 }
             }
         }
@@ -650,7 +652,7 @@ private fun ImportTransactionsScreen(
                 OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f).height(52.dp)) { Text("取消") }
                 Button(onClick = {
                     if (destination == ImportDestination.SCHEDULE) onImportSchedules(selected.map { draft ->
-                        ScheduleEvent(title = draft.title.trim(), eventAt = parseImportedDate(draft.timeText)!!, reminderDays = draft.reminderDays, reminderHours = draft.reminderHours, reminderMinutes = draft.reminderMinutes, note = draft.note.trim())
+                        ScheduleEvent(title = draft.title.trim(), eventAt = parseImportedDate(draft.timeText)!!, reminderDays = draft.reminderDays, reminderHours = draft.reminderHours, reminderMinutes = draft.reminderMinutes, note = draft.note.trim(), reminderEnabled = draft.reminderDays > 0 || draft.reminderHours > 0 || draft.reminderMinutes > 0)
                     }) else onImportTodo(selected.map { draft -> draft.title.trim() + draft.note.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty() })
                     completedCount = selected.size
                 }, enabled = selected.isNotEmpty(), modifier = Modifier.weight(1f).height(52.dp)) { Text("确认导入（${selected.size}）") }
@@ -742,7 +744,7 @@ private fun ScheduleHistoryScreen(events: List<ScheduleEvent>, onBack: () -> Uni
             if (events.isEmpty()) item { EmptyHint("暂无历史事务", "归档或过期的时间事务会出现在这里") }
             items(events, key = { it.id }) { event ->
                 val card: @Composable () -> Unit = { ScheduleCard(event, showReminder = false, selected = event.id in selectedIds, selecting = selecting, onToggle = { selectedIds = selectedIds.toggle(event.id) }, onLongSelect = { selectedIds = setOf(event.id) }) }
-                if (selecting) card() else SwipeDeleteRow(onDelete = { onDelete(listOf(event)) }) { card() }
+                if (selecting) card() else SwipeRevealDeleteRow(enabled = true, onDelete = { onDelete(listOf(event)) }) { card() }
             }
         }
         if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { onDelete(events.filter { it.id in selectedIds }); selectedIds = emptySet() })
@@ -757,7 +759,7 @@ private fun ScheduleCard(event: ScheduleEvent, showReminder: Boolean, selected: 
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else expanded = !expanded }, onLongClick = onLongSelect)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text(formatScheduleDate(event), color = Blue, fontSize = 13.sp); Text(event.title, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                Column(Modifier.weight(1f)) { Text(formatScheduleDate(event), color = Blue, fontSize = 13.sp); Text(event.title, color = Ink, fontSize = 18.sp, maxLines = if (expanded) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis) }
                 if (selecting) { SelectionMarker(selected); Spacer(Modifier.width(8.dp)) }
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue, modifier = Modifier.size(20.dp))
             }
@@ -768,7 +770,7 @@ private fun ScheduleCard(event: ScheduleEvent, showReminder: Boolean, selected: 
 }
 
 @Composable
-private fun DailyTodoHomeScreen(boards: List<TodoBoardWithItems>, legacyBoards: List<TodoBoardWithItems>, preferences: com.shijiannote.app.data.DailyTodoPreferences?, settingsOpen: Boolean, onSettingsOpen: () -> Unit, onOpenHistory: () -> Unit, onOpenPage: (String) -> Unit, onSetVisible: (String, Boolean) -> Unit, onToggleLegacyItem: (TodoItem) -> Unit, onToggleLegacyBoard: (TodoBoard) -> Unit, onEditLegacy: (TodoBoardWithItems) -> Unit, onArchiveLegacy: (TodoBoardWithItems) -> Unit, onDeleteLegacy: (TodoBoardWithItems) -> Unit, onReorderLegacy: (List<TodoBoard>) -> Unit, onSetLegacyExpanded: (List<TodoBoard>, Boolean) -> Unit) {
+private fun DailyTodoHomeScreen(boards: List<TodoBoardWithItems>, legacyBoards: List<TodoBoardWithItems>, overdueBoards: List<TodoBoardWithItems>, preferences: com.shijiannote.app.data.DailyTodoPreferences?, settingsOpen: Boolean, onSettingsOpen: () -> Unit, onOpenHistory: () -> Unit, onOpenPage: (String) -> Unit, onSetVisible: (String, Boolean) -> Unit, onToggleLegacyItem: (TodoItem) -> Unit, onToggleLegacyBoard: (TodoBoard) -> Unit, onEditLegacy: (TodoBoardWithItems) -> Unit, onArchiveLegacy: (TodoBoardWithItems) -> Unit, onDeleteLegacy: (TodoBoardWithItems) -> Unit, onReorderLegacy: (List<TodoBoard>) -> Unit, onSetLegacyExpanded: (List<TodoBoard>, Boolean) -> Unit) {
     val showToday = preferences?.showToday ?: true; val showTomorrow = preferences?.showTomorrow ?: true
     val today = boards.firstOrNull { it.board.boardType == "TODAY" }; val tomorrow = boards.firstOrNull { it.board.boardType == "TOMORROW" }
     var orderedLegacy by remember { mutableStateOf(legacyBoards) }
@@ -786,6 +788,7 @@ private fun DailyTodoHomeScreen(boards: List<TodoBoardWithItems>, legacyBoards: 
         item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("待办", fontSize = 30.sp, color = Ink, modifier = Modifier.weight(1f)); Box { IconButton(onClick = onSettingsOpen) { Icon(Icons.Default.Settings, "待办设置", tint = Ink) }; DropdownMenu(expanded = settingsOpen, onDismissRequest = onSettingsOpen) { DropdownMenuItem(text = { Text("历史") }, onClick = { onSettingsOpen(); onOpenHistory() }); HorizontalDivider(); DropdownMenuItem(text = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("今天", Modifier.weight(1f)); Checkbox(checked = showToday, onCheckedChange = null, enabled = !showTomorrow) } }, onClick = { if (!showTomorrow) onSetVisible("TODAY", !showToday) }, enabled = !showTomorrow); DropdownMenuItem(text = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("明天", Modifier.weight(1f)); Checkbox(checked = showTomorrow, onCheckedChange = null) } }, onClick = { onSetVisible("TOMORROW", !showTomorrow) }) } } } }
         if (showToday) item { DailyPageTile("今天", today?.items?.size ?: 0, onClick = { if (today != null) onOpenPage("TODAY") }, onClose = { if (!showTomorrow) onSetVisible("TODAY", false) }) }
         if (showTomorrow) item { DailyPageTile("明天", tomorrow?.items?.size ?: 0, onClick = { if (tomorrow != null) onOpenPage("TOMORROW") }, onClose = { onSetVisible("TOMORROW", false) }) }
+        item { OverduePageTile(overdueBoards.sumOf { board -> board.items.count { !it.completed } }, onClick = { onOpenPage("OVERDUE") }) }
         if (!showToday && !showTomorrow) item { EmptyHint("点击＋号创建待办", "也可以在右上角设置中重新打开“今天”或“明天”") }
         if (orderedLegacy.isNotEmpty()) item {
             val allCollapsed = orderedLegacy.all { !it.board.expanded }
@@ -805,6 +808,53 @@ private fun DailyPageTile(title: String, count: Int, onClick: () -> Unit, onClos
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))) { Box(Modifier.matchParentSize().background(LightRed), contentAlignment = Alignment.CenterEnd) { Text("关闭", color = DeleteInk, modifier = Modifier.padding(end = 28.dp)) }; Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = LightGreen), modifier = Modifier.fillMaxWidth().offset { IntOffset(offset.value.roundToInt(), 0) }.pointerInput(actionWidthPx) { detectHorizontalDragGestures(onHorizontalDrag = { change, amount -> change.consume(); scope.launch { offset.snapTo((offset.value + amount).coerceIn(-actionWidthPx, 0f)) } }, onDragEnd = { if (offset.value < -actionWidthPx / 2) onClose() else scope.launch { offset.animateTo(0f) } }, onDragCancel = { scope.launch { offset.animateTo(0f) } }) }.clickable(onClick = onClick)) { Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Today, null, tint = Color(0xFF317C52), modifier = Modifier.size(20.dp)); Spacer(Modifier.width(10.dp)); Text(title, color = Ink, fontSize = 17.sp, modifier = Modifier.weight(1f)); Text("$count 条", color = Muted, fontSize = 13.sp); Icon(Icons.Default.ChevronRight, null, tint = Muted) } } }
 }
 
+@Composable
+private fun OverdueTodoScreen(boards: List<TodoBoardWithItems>, onBack: () -> Unit, onToggleItem: (TodoItem) -> Unit, onToggleBoard: (TodoBoard) -> Unit, onEdit: (TodoBoardWithItems) -> Unit, onArchive: (TodoBoardWithItems) -> Unit, onDelete: (TodoBoardWithItems) -> Unit, onReorder: (List<TodoBoard>) -> Unit, onSetExpanded: (List<TodoBoard>, Boolean) -> Unit) {
+    var orderedBoards by remember { mutableStateOf(boards) }
+    var draggingBoardId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(boards) { if (draggingBoardId == null) orderedBoards = boards }
+    fun moveBoard(board: TodoBoardWithItems, direction: Int) {
+        val from = orderedBoards.indexOfFirst { it.board.id == board.board.id }
+        val to = (from + direction).coerceIn(0, orderedBoards.lastIndex)
+        if (from < 0 || from == to) return
+        val updated = orderedBoards.toMutableList()
+        updated.add(to, updated.removeAt(from))
+        orderedBoards = updated
+        onReorder(updated.map { it.board })
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("过去未完成", fontSize = 28.sp, color = DeleteInk, modifier = Modifier.weight(1f)) } }
+        if (orderedBoards.isEmpty()) item { EmptyHint("没有过去未完成的待办", "超过截止时间或未完成的“今天”会保留在这里") }
+        if (orderedBoards.isNotEmpty()) item {
+            val allCollapsed = orderedBoards.all { !it.board.expanded }
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("待办框", color = Muted, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text("收起", color = Muted, fontSize = 13.sp)
+                Checkbox(checked = allCollapsed, onCheckedChange = { collapsed -> onSetExpanded(orderedBoards.map { it.board }, !collapsed) }, modifier = Modifier.size(30.dp))
+            }
+        }
+        items(orderedBoards, key = { it.board.id }) { board ->
+            ReorderableTodoBoard(
+                board = board,
+                onToggleItem = onToggleItem,
+                onToggleBoard = onToggleBoard,
+                onEdit = { onEdit(board) },
+                onArchive = { onArchive(board) },
+                onDelete = { onDelete(board) },
+                onMove = { moveBoard(board, it) },
+                onDragState = { active -> draggingBoardId = if (active) board.board.id else null }
+            )
+        }
+    }
+}
+@Composable
+private fun OverduePageTile(count: Int, onClick: () -> Unit) {
+    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = LightRed), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.NotificationsNone, null, tint = DeleteInk, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(10.dp)); Text("过去未完成", color = DeleteInk, fontSize = 17.sp, modifier = Modifier.weight(1f)); Text("$count 条", color = DeleteInk, fontSize = 13.sp); Icon(Icons.Default.ChevronRight, null, tint = DeleteInk)
+        }
+    }
+}
 @Composable
 private fun DailyTodoPage(board: TodoBoardWithItems, onBack: () -> Unit, onToggle: (TodoItem) -> Unit, onToggleImportant: (TodoItem) -> Unit, onDelete: (TodoItem) -> Unit, onEdit: (TodoItem) -> Unit, onReorder: (List<TodoItem>) -> Unit, onExport: () -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     var selectedIds by remember(board.board.id) { mutableStateOf(setOf<Long>()) }
@@ -923,7 +973,7 @@ private fun TodoScreen(boards: List<TodoBoardWithItems>, toggleItem: (TodoItem) 
 }
 
 @Composable
-private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Unit, onDelete: (List<TodoBoardWithItems>) -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
+private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Unit, onToggleBoard: (TodoBoard) -> Unit, onDelete: (List<TodoBoardWithItems>) -> Unit, onSelectionChanged: (Boolean) -> Unit, cancelSelectionRequest: Int) {
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(selecting) { onSelectionChanged(selecting) }; LaunchedEffect(cancelSelectionRequest) { if (cancelSelectionRequest > 0) selectedIds = emptySet() }
@@ -932,8 +982,8 @@ private fun TodoHistoryScreen(boards: List<TodoBoardWithItems>, onBack: () -> Un
             item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("待办历史", fontSize = 28.sp, color = Ink) } }
             if (boards.isEmpty()) item { EmptyHint("暂无历史待办", "归档或过期的待办会出现在这里") }
             items(boards, key = { it.board.id }) { board ->
-                val card: @Composable () -> Unit = { TodoBoardCard(board, history = true, selected = board.board.id in selectedIds, selecting = selecting, toggleItem = {}, toggleBoard = {}, onToggle = { selectedIds = selectedIds.toggle(board.board.id) }, onLongSelect = { selectedIds = setOf(board.board.id) }) }
-                if (selecting) card() else SwipeDeleteRow(onDelete = { onDelete(listOf(board)) }) { card() }
+                val card: @Composable () -> Unit = { TodoBoardCard(board, history = true, selected = board.board.id in selectedIds, selecting = selecting, toggleItem = {}, toggleBoard = onToggleBoard, onToggle = { selectedIds = selectedIds.toggle(board.board.id) }, onLongSelect = { selectedIds = setOf(board.board.id) }) }
+                if (selecting) card() else SwipeRevealDeleteRow(enabled = true, onDelete = { onDelete(listOf(board)) }) { card() }
             }
         }
         if (selecting) SelectionActionBar(onCancel = { selectedIds = emptySet() }, onDelete = { onDelete(boards.filter { it.board.id in selectedIds }); selectedIds = emptySet() })
@@ -982,22 +1032,27 @@ private fun ReorderableTodoBoard(
 private fun formatTodoBoardReminder(board: TodoBoard): String? {
     if (board.reminderAt == null) return null
     if (board.reminderRule != null) return "重复提醒"
-    if (board.reminderTriggered) return "单次已提醒"
-    return "单次提醒"
+    if (board.reminderTriggered) return "已提醒"
+    val parts = listOf(
+        board.reminderDays.takeIf { it > 0 }?.let { "${it}天" },
+        board.reminderHours.takeIf { it > 0 }?.let { "${it}小时" },
+        board.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }
+    ).filterNotNull()
+    return if (parts.isEmpty()) "准时提醒" else "提前 ${parts.joinToString(" ")}提醒"
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun TodoBoardCard(board: TodoBoardWithItems, history: Boolean, selected: Boolean, selecting: Boolean, toggleItem: (TodoItem) -> Unit, toggleBoard: (TodoBoard) -> Unit, onToggle: () -> Unit, onLongSelect: () -> Unit, dragging: Boolean = false, modifier: Modifier = Modifier, enableLongSelection: Boolean = true) {
     val done = board.items.count { it.completed }
-    val overdue = !history && board.board.dueDate?.let { it < startOfToday() && done < board.items.size } == true
+    val overdue = !history && board.board.dueDate?.let { it < System.currentTimeMillis() && done < board.items.size } == true
     val cardInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val clickBehavior = if (enableLongSelection) {
         Modifier.combinedClickable(interactionSource = cardInteraction, indication = null, onClick = { if (selecting) onToggle() else toggleBoard(board.board) }, onLongClick = onLongSelect)
     } else {
         Modifier.clickable(interactionSource = cardInteraction, indication = null) { toggleBoard(board.board) }
     }
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().then(clickBehavior)) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging || board.board.boardType == "OVERDUE") Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().then(clickBehavior)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Icon(if (board.board.expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = Blue); Spacer(Modifier.width(6.dp)); Text(board.board.summary, Modifier.weight(1f), color = Ink, fontSize = 19.sp, maxLines = if (board.board.expanded) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis); Text("$done / ${board.items.size}", color = Muted); if (selecting) SelectionMarker(selected) }
             if (board.board.dueDate != null) {
@@ -1210,6 +1265,7 @@ private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave:
     var note by remember(event?.id) { mutableStateOf(event?.note.orEmpty()) }
     var dateTime by remember(event?.id) { mutableStateOf(calendar.timeInMillis) }
     var hasExactTime by remember(event?.id) { mutableStateOf(event?.let { Calendar.getInstance().apply { timeInMillis = it.eventAt }.let { c -> c.get(Calendar.HOUR_OF_DAY) != 0 || c.get(Calendar.MINUTE) != 0 } } ?: false) }
+    var reminderEnabled by remember(event?.id) { mutableStateOf(event?.reminderEnabled ?: false) }
     var days by remember(event?.id) { mutableStateOf(event?.reminderDays?.takeIf { it > 0 }?.toString().orEmpty()) }
     var hours by remember(event?.id) { mutableStateOf(event?.reminderHours?.takeIf { it > 0 }?.toString().orEmpty()) }
     var minutes by remember(event?.id) { mutableStateOf(event?.reminderMinutes?.takeIf { it > 0 }?.toString().orEmpty()) }
@@ -1217,8 +1273,8 @@ private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave:
         OutlinedTextField(title, { title = it }, label = { Text("事务名称") }, singleLine = true)
         OutlinedButton(onClick = { val c = Calendar.getInstance().apply { timeInMillis = dateTime }; DatePickerDialog(context, { _, y, m, d -> c.set(y, m, d); dateTime = c.timeInMillis }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show() }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text(formatDateOnly(dateTime)) }
         OutlinedButton(onClick = { val c = Calendar.getInstance().apply { timeInMillis = dateTime }; TimePickerDialog(context, { _, h, m -> c.set(Calendar.HOUR_OF_DAY, h); c.set(Calendar.MINUTE, m); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0); dateTime = c.timeInMillis; hasExactTime = true }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show() }) { Text(if (hasExactTime) "精确时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(dateTime))}" else "精确时间（可选）：00:00") }
-        Text("提前提醒（全部为 0 表示不提醒）", color = Muted, fontSize = 13.sp); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { NumberField("天", days, 999) { days = it }; NumberField("时", hours, 23) { hours = it }; NumberField("分", minutes, 59) { minutes = it } }; OutlinedTextField(note, { note = it }, label = { Text("事务详情（可选）") }, minLines = 2)
-    } }, confirmButton = { Button(onClick = { if (title.isNotBlank()) onSave(ScheduleEvent(id = event?.id ?: 0, title = title.trim(), eventAt = dateTime, reminderDays = days.toIntOrNull() ?: 0, reminderHours = hours.toIntOrNull() ?: 0, reminderMinutes = minutes.toIntOrNull() ?: 0, note = note.trim())) }) { Text(if (event == null) "创建" else "保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
+        Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it }); Text("是否提醒") }; if (reminderEnabled) { Text("设置提醒时间（不填表示准时提醒）", color = Muted, fontSize = 13.sp); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { NumberField("天", days, 999) { days = it }; NumberField("时", hours, 23) { hours = it }; NumberField("分", minutes, 59) { minutes = it } } }; OutlinedTextField(note, { note = it }, label = { Text("事务详情（可选）") }, minLines = 2)
+    } }, confirmButton = { Button(onClick = { if (title.isNotBlank()) onSave(ScheduleEvent(id = event?.id ?: 0, title = title.trim(), eventAt = dateTime, reminderDays = days.toIntOrNull() ?: 0, reminderHours = hours.toIntOrNull() ?: 0, reminderMinutes = minutes.toIntOrNull() ?: 0, note = note.trim(), reminderEnabled = reminderEnabled)) }) { Text(if (event == null) "创建" else "保存") } }, dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } })
 }
 @Composable
 private fun NumberField(unit: String, value: String, maximum: Int, onChange: (String) -> Unit) {
@@ -1397,8 +1453,9 @@ private fun formatTodoReminder(item: TodoItem): String? {
 }
 
 private fun formatReminder(event: ScheduleEvent): String? {
+    if (!event.reminderEnabled) return null
     val parts = listOf(event.reminderDays.takeIf { it > 0 }?.let { "${it}天" }, event.reminderHours.takeIf { it > 0 }?.let { "${it}小时" }, event.reminderMinutes.takeIf { it > 0 }?.let { "${it}分钟" }).filterNotNull()
-    return parts.takeIf { it.isNotEmpty() }?.let { "提前 ${it.joinToString(" ")}提醒" }
+    return if (parts.isEmpty()) "准时提醒" else "提前 ${parts.joinToString(" ")}提醒"
 }
 
 private fun importPrompt(destination: ImportDestination): String = if (destination == ImportDestination.TODO) """

@@ -15,7 +15,9 @@ data class ScheduleEvent(
     val reminderMinutes: Int,
     val note: String = "",
     val archived: Boolean = false,
-    val reminderTriggered: Boolean = false
+    val reminderTriggered: Boolean = false,
+    /** Keeps an intentional on-time reminder distinct from no reminder at all. */
+    val reminderEnabled: Boolean = false
 )
 
 @Entity(tableName = "todo_boards")
@@ -107,4 +109,3 @@ data class MemoryEntry(
     val position: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
-

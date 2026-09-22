@@ -214,34 +214,26 @@ internal fun QuickTodoCreateDialog(
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("截止时间", color = QuickInk, fontSize = 16.sp)
+                        OutlinedButton(onClick = { showDeadlineSetup = true }) { Text("截止时间") }
                         Spacer(Modifier.width(12.dp))
-                        if (dueAt == null) {
-                            Text("无", color = QuickMuted, modifier = Modifier.weight(1f))
-                            OutlinedButton(onClick = { showDeadlineSetup = true }) { Text("设置") }
-                        } else {
-                            RemovableSettingBox(
-                                text = formatDeadlineDateTime(dueAt!!),
-                                onClick = { showDeadlineSetup = true },
-                                onClear = { dueAt = null; reminderDraft = null },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                        if (dueAt == null) Text("未设置", color = QuickMuted, modifier = Modifier.weight(1f))
+                        else RemovableSettingBox(
+                            text = formatDeadlineDateTime(dueAt!!),
+                            onClick = { showDeadlineSetup = true },
+                            onClear = { dueAt = null },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("提醒我", color = QuickInk, fontSize = 16.sp)
+                        OutlinedButton(onClick = { showReminderSetup = true }) { Text("提醒我") }
                         Spacer(Modifier.width(12.dp))
-                        if (reminderDraft == null) {
-                            Text("无", color = QuickMuted, modifier = Modifier.weight(1f))
-                            OutlinedButton(onClick = { showReminderSetup = true }) { Text("设置") }
-                        } else {
-                            RemovableSettingBox(
-                                text = describeReminder(reminderDraft!!),
-                                onClick = { showReminderSetup = true },
-                                onClear = { reminderDraft = null },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                        if (reminderDraft == null) Text("未设置", color = QuickMuted, modifier = Modifier.weight(1f))
+                        else RemovableSettingBox(
+                            text = describeReminder(reminderDraft!!),
+                            onClick = { showReminderSetup = true },
+                            onClear = { reminderDraft = null },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
@@ -404,7 +396,7 @@ private fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boole
                     }
                     if (!hasDeadline) Text("未设置截止时间时，可使用重复提醒；服务会持续到清除。", color = QuickMuted, fontSize = 12.sp)
                     if (!repeating) {
-                        Text("提前提醒", color = QuickInk, fontSize = 17.sp)
+                        Text("提前提醒（默认为准时提醒）", color = QuickInk, fontSize = 17.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             QuickNumber("天", singleDays, 999) { singleDays = it }
                             QuickNumber("时", singleHours, 23) { singleHours = it }
@@ -520,7 +512,7 @@ private fun RemovableSettingBox(
 
 private fun describeReminder(draft: BoardReminderDraft): String {
     if (draft.repeatRule == null) {
-        return "提前${draft.advanceDays}天${draft.advanceHours}时${draft.advanceMinutes}分提醒"
+        return if (draft.advanceDays == 0 && draft.advanceHours == 0 && draft.advanceMinutes == 0) "准时提醒" else "提前${draft.advanceDays}天${draft.advanceHours}时${draft.advanceMinutes}分提醒"
     }
     val label = when (draft.repeatRule) {
         ReminderScheduler.RULE_WEEKDAYS -> "周一至周五"

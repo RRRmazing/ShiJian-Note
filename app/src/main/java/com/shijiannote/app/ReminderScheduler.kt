@@ -72,7 +72,7 @@ object ReminderScheduler {
         } else {
             nextRepeatAt(board, afterTime) ?: return
         }
-        if (remindAt <= afterTime || deadlineTime?.let { remindAt >= it } == true) return
+        if (remindAt <= afterTime || (board.reminderRule != null && deadlineTime?.let { remindAt >= it } == true)) return
         requestNotificationPermission(context)
         val note = if (board.reminderRule == null) "待办框截止提醒" else "待办框重复提醒"
         val intent = Intent(context, ReminderReceiver::class.java)

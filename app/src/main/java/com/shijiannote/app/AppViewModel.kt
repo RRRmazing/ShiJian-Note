@@ -89,9 +89,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteSchedule(event: ScheduleEvent) = viewModelScope.launch { dao.deleteSchedule(event) }
     fun archiveSchedules(events: List<ScheduleEvent>) = viewModelScope.launch { dao.archiveSchedules(events.map { it.id }) }
     fun deleteSchedules(events: List<ScheduleEvent>) = viewModelScope.launch { dao.deleteSchedules(events.map { it.id }) }
-    fun archiveExpiredItems(today: Long, now: Long) = viewModelScope.launch {
+    fun archiveExpiredItems(now: Long) = viewModelScope.launch {
         dao.archiveExpiredSchedules(now)
-        dao.archiveExpiredTodoBoards(today)
+        dao.archiveExpiredTodoBoards(now)
     }
 
     fun addTodo(summary: String, dueDate: Long?, tasks: List<String>, reminderAt: Long? = null, reminderDays: Int = 0, reminderHours: Int = 0, reminderMinutes: Int = 0, reminderRule: String? = null, reminderBaseAt: Long? = null, reminderCustomDays: Int = 0, afterInsert: ((TodoBoard) -> Unit)? = null) = viewModelScope.launch {
@@ -100,6 +100,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         dao.insertTodoItems(tasks.filter { it.isNotBlank() }.mapIndexed { index, text ->
             TodoItem(boardId = boardId, text = text.trim(), position = index)
         })
+        dao.archiveExpiredTodoBoards(System.currentTimeMillis())
         afterInsert?.invoke(board.copy(id = boardId))
     }
 
@@ -116,6 +117,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         dao.insertTodoItems(tasks.filter { it.isNotBlank() }.mapIndexed { index, text ->
             TodoItem(boardId = board.id, text = text.trim(), position = index)
         })
+        dao.archiveExpiredTodoBoards(System.currentTimeMillis())
     }
 
     fun reorderTodoBoards(boards: List<TodoBoard>) = viewModelScope.launch { boards.forEachIndexed { index, board -> dao.setTodoBoardPosition(board.id, index) } }

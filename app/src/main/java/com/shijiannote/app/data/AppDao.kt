@@ -26,14 +26,15 @@ interface AppDao {
     @Query("UPDATE schedule_events SET archived = 1 WHERE archived = 0 AND eventAt < :now") suspend fun archiveExpiredSchedules(now: Long)
 
     @Transaction
-    @Query("SELECT * FROM todo_boards WHERE archived = 0 ORDER BY CASE WHEN boardType = 'LIST' THEN 0 ELSE 1 END, position ASC, createdAt DESC")
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 ORDER BY CASE boardType WHEN 'LIST' THEN 0 WHEN 'OVERDUE' THEN 1 ELSE 2 END, position ASC, createdAt DESC")
     fun observeTodoBoards(): Flow<List<TodoBoardWithItems>>
 
     @Transaction
     @Query("SELECT * FROM todo_boards WHERE archived = 1 ORDER BY dueDate DESC, createdAt DESC")
     fun observeArchivedTodoBoards(): Flow<List<TodoBoardWithItems>>
 
-    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM todo_boards WHERE archived = 0 AND boardType = 'LIST'") suspend fun nextTodoBoardPosition(): Int
+    @Query("SELECT COALESCE(MIN(position), 0) - 1 FROM todo_boards WHERE archived = 0 AND boardType = 'LIST'") suspend fun nextTodoBoardPosition(): Int
+    @Query("SELECT COALESCE(MIN(position), 0) - 1 FROM todo_boards WHERE archived = 0 AND boardType = 'OVERDUE'") suspend fun nextOverdueTodoBoardPosition(): Int
     @Query("UPDATE todo_boards SET position = :position WHERE id = :boardId") suspend fun setTodoBoardPosition(boardId: Long, position: Int)
     @Query("UPDATE todo_boards SET expanded = :expanded WHERE id IN (:ids)") suspend fun setTodoBoardsExpanded(ids: List<Long>, expanded: Boolean)
 
@@ -46,8 +47,29 @@ interface AppDao {
     @Delete suspend fun deleteTodoBoard(board: TodoBoard)
     @Query("UPDATE todo_boards SET archived = 1 WHERE id IN (:ids)") suspend fun archiveTodoBoards(ids: List<Long>)
     @Query("DELETE FROM todo_boards WHERE id IN (:ids)") suspend fun deleteTodoBoards(ids: List<Long>)
-    @Query("UPDATE todo_boards SET archived = 1 WHERE archived = 0 AND dueDate IS NOT NULL AND dueDate < :today") suspend fun archiveExpiredTodoBoards(today: Long)
-
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 AND boardType = 'LIST' AND dueDate IS NOT NULL AND dueDate < :now AND EXISTS (SELECT 1 FROM todo_items WHERE todo_items.boardId = todo_boards.id AND todo_items.completed = 0)")
+    suspend fun findExpiredUnfinishedTodoBoards(now: Long): List<TodoBoard>
+    @Query("SELECT * FROM todo_boards WHERE archived = 0 AND boardType = 'OVERDUE' AND EXISTS (SELECT 1 FROM todo_items WHERE todo_items.boardId = todo_boards.id AND todo_items.completed = 0) AND EXISTS (SELECT 1 FROM todo_items WHERE todo_items.boardId = todo_boards.id AND todo_items.completed = 1)")
+    suspend fun findMixedOverdueTodoBoards(): List<TodoBoard>
+    @Query("UPDATE todo_boards SET archived = 1, boardType = 'HISTORY' WHERE archived = 0 AND ((boardType = 'LIST' AND dueDate IS NOT NULL AND dueDate < :now) OR boardType = 'OVERDUE') AND NOT EXISTS (SELECT 1 FROM todo_items WHERE todo_items.boardId = todo_boards.id AND todo_items.completed = 0)")
+    suspend fun archiveCompletedExpiredOrOverdueTodoBoards(now: Long)
+    @Query("SELECT * FROM todo_items WHERE boardId = :boardId ORDER BY position ASC")
+    suspend fun getTodoItems(boardId: Long): List<TodoItem>
+    @Transaction
+    suspend fun moveUnfinishedBoardToOverdue(board: TodoBoard, completedHistoryTitle: String) {
+        val completedItems = getTodoItems(board.id).filter { it.completed }
+        if (completedItems.isNotEmpty()) {
+            val historyId = insertTodoBoard(board.copy(id = 0, summary = completedHistoryTitle, boardType = "HISTORY", archived = true))
+            completedItems.forEach { updateTodoItem(it.copy(boardId = historyId)) }
+        }
+        updateTodoBoard(board.copy(boardType = "OVERDUE", archived = false, position = nextOverdueTodoBoardPosition()))
+    }
+    @Transaction
+    suspend fun archiveExpiredTodoBoards(now: Long) {
+        findMixedOverdueTodoBoards().forEach { moveUnfinishedBoardToOverdue(it, "${it.summary} · 已完成") }
+        findExpiredUnfinishedTodoBoards(now).forEach { moveUnfinishedBoardToOverdue(it, "${it.summary} · 已完成") }
+        archiveCompletedExpiredOrOverdueTodoBoards(now)
+    }
     @Transaction
     @Query("SELECT * FROM todo_boards WHERE archived = 0 AND boardType IN ('TODAY', 'TOMORROW') ORDER BY CASE boardType WHEN 'TODAY' THEN 0 ELSE 1 END")
     fun observeDailyTodoBoards(): Flow<List<TodoBoardWithItems>>
@@ -66,6 +88,8 @@ interface AppDao {
 
     @Query("SELECT COUNT(*) FROM todo_items WHERE boardId = :boardId")
     suspend fun countTodoItems(boardId: Long): Int
+    @Query("SELECT COUNT(*) FROM todo_items WHERE boardId = :boardId AND completed = 0")
+    suspend fun countIncompleteTodoItems(boardId: Long): Int
 
     @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM todo_items WHERE boardId = :boardId")
     suspend fun nextTodoPosition(boardId: Long): Int
@@ -104,7 +128,8 @@ interface AppDao {
         val preferences = getDailyTodoPreferences() ?: return
         val todayBoard = findDailyBoard("TODAY")
         if (todayBoard != null) {
-            if (countTodoItems(todayBoard.id) > 0) updateTodoBoard(todayBoard.copy(summary = historyTitle, boardType = "HISTORY", archived = true))
+            if (countIncompleteTodoItems(todayBoard.id) > 0) moveUnfinishedBoardToOverdue(todayBoard, "$historyTitle · 已完成")
+            else if (countTodoItems(todayBoard.id) > 0) updateTodoBoard(todayBoard.copy(summary = historyTitle, boardType = "HISTORY", archived = true))
             else deleteTodoBoard(todayBoard)
         }
         val tomorrowBoard = findDailyBoard("TOMORROW")
@@ -134,8 +159,8 @@ interface AppDao {
     @Query("SELECT * FROM memory_categories ORDER BY position ASC, createdAt DESC")
     fun observeMemoryCategories(): Flow<List<MemoryCategoryWithEntries>>
 
-    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM memory_categories") suspend fun nextMemoryCategoryPosition(): Int
-    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM memory_entries WHERE categoryId = :categoryId") suspend fun nextMemoryEntryPosition(categoryId: Long): Int
+    @Query("SELECT COALESCE(MIN(position), 0) - 1 FROM memory_categories") suspend fun nextMemoryCategoryPosition(): Int
+    @Query("SELECT COALESCE(MIN(position), 0) - 1 FROM memory_entries WHERE categoryId = :categoryId") suspend fun nextMemoryEntryPosition(categoryId: Long): Int
     @Query("UPDATE memory_categories SET position = :position WHERE id = :id") suspend fun setMemoryCategoryPosition(id: Long, position: Int)
     @Query("UPDATE memory_entries SET position = :position WHERE id = :id") suspend fun setMemoryEntryPosition(id: Long, position: Int)
     @Insert suspend fun insertMemoryCategory(category: MemoryCategory): Long
