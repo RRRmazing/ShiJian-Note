@@ -37,7 +37,7 @@ object ReminderScheduler {
     const val RULE_CUSTOM_DAYS = "CUSTOM_DAYS"
 
     fun schedule(context: Context, event: ScheduleEvent) {
-        if (event.reminderDays == 0 && event.reminderHours == 0 && event.reminderMinutes == 0) return
+        if (!event.reminderEnabled || event.archived || event.deletedAt != null) return
         val remindAt = event.eventAt - event.reminderDays * 86_400_000L - event.reminderHours * 3_600_000L - event.reminderMinutes * 60_000L
         if (remindAt <= System.currentTimeMillis()) return
         requestNotificationPermission(context)
@@ -50,6 +50,7 @@ object ReminderScheduler {
     }
 
     fun scheduleTodo(context: Context, item: TodoItem) {
+        if (item.completed || item.deletedAt != null) return
         val taskTime = item.reminderAt ?: return
         val remindAt = taskTime - item.reminderHours * 3_600_000L - item.reminderMinutes * 60_000L
         if (remindAt <= System.currentTimeMillis()) return
@@ -64,6 +65,7 @@ object ReminderScheduler {
 
     /** Schedules one alarm. For repeats, the receiver schedules the next occurrence after it fires. */
     fun scheduleTodoBoard(context: Context, board: TodoBoard, afterTime: Long = System.currentTimeMillis()) {
+        if (board.archived || board.deletedAt != null) return
         if (board.reminderAt == null) return
         val deadlineTime = board.dueDate
         val remindAt = if (board.reminderRule == null) {
@@ -175,11 +177,17 @@ class ReminderReceiver : BroadcastReceiver() {
             TODO_BOARD -> 2_000_000 + id
             else -> id
         }
-        ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), notificationId)
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val dao = AppDatabase.get(context).appDao()
+                val valid = when (type) {
+                    TODO -> dao.allTodos().any { b -> !b.board.archived && b.board.deletedAt == null && b.items.any { it.id == id && !it.completed && it.deletedAt == null } }
+                    TODO_BOARD -> dao.getTodoBoard(id)?.let { !it.archived && it.deletedAt == null } == true
+                    else -> dao.allSchedule().any { it.id == id && !it.archived && it.deletedAt == null && it.reminderEnabled }
+                }
+                if (!valid) return@launch
+                ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), notificationId)
                 when (type) {
                     TODO -> dao.markTodoReminded(id)
                     TODO_BOARD -> {
@@ -203,5 +211,21 @@ class ReminderReceiver : BroadcastReceiver() {
         const val SCHEDULE = "schedule"
         const val TODO = "todo"
         const val TODO_BOARD = "todo_board"
+    }
+}
+
+class ReminderBootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val result = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val dao = AppDatabase.get(context).appDao()
+                dao.allSchedule().filter { !it.archived && it.deletedAt == null }.forEach { ReminderScheduler.schedule(context, it) }
+                dao.allTodos().filter { !it.board.archived && it.board.deletedAt == null }.forEach { b ->
+                    ReminderScheduler.scheduleTodoBoard(context, b.board)
+                    b.items.filter { !it.completed && it.deletedAt == null }.forEach { ReminderScheduler.scheduleTodo(context, it) }
+                }
+            } finally { result.finish() }
+        }
     }
 }

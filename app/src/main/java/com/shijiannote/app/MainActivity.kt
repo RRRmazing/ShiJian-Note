@@ -138,25 +138,25 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-private val Blue = Color(0xFF356AE6)
+private val Blue = Color(0xFF587BB9)
 private val SoftBlue = Color(0xFFEAF0FF)
 private val LightBlue = Color(0xFFDCE8FF)
 private val LightYellow = Color(0xFFFFF1B8)
 private val LightGreen = Color(0xFFDDF4E4)
 private val LightRed = Color(0xFFFFDAD6)
 private val DeleteInk = Color(0xFF9D2922)
-private val Ink = Color(0xFF1C1B20)
-private val Muted = Color(0xFF706F78)
+private val Ink = Color(0xFF283449)
+private val Muted = Color(0xFF718095)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { ShiJianNoteApp() }
+        setContent { ModernShiJianApp() }
     }
 }
 
-private enum class ImportDestination { SCHEDULE, TODO }
+internal enum class ImportDestination { SCHEDULE, TODO }
 private enum class AboutPage { USAGE, SOFTWARE }
 
 private data class ImportedTransaction(
@@ -539,7 +539,7 @@ private fun SoftwareInfoScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun AdvancedFeaturesScreen(onBack: () -> Unit, onOpenImport: (ImportDestination) -> Unit) {
+internal fun AdvancedFeaturesScreen(onBack: () -> Unit, onOpenImport: (ImportDestination) -> Unit) {
     var chooseDestination by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Column { Text("高级功能", fontSize = 28.sp, color = Ink); Text("批量整理和导入事务", color = Muted, fontSize = 13.sp) } } }
@@ -591,7 +591,7 @@ private fun TodoImportSetupDialog(initialTitle: String, initialDueDate: Long?, o
 }
 
 @Composable
-private fun ImportTransactionsScreen(
+internal fun ImportTransactionsScreen(
     destination: ImportDestination,
     todoTitle: String,
     todoDueDate: Long?,
@@ -1099,7 +1099,7 @@ private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, 
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
 }
 @Composable
-private fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, onSelect: (Long) -> Unit) {
+internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, onSelect: (Long) -> Unit) {
     val cells = mutableListOf<java.time.LocalDate?>().apply {
         repeat(month.atDay(1).dayOfWeek.value % 7) { add(null) }
         (1..month.lengthOfMonth()).forEach { add(month.atDay(it)) }
@@ -1258,7 +1258,7 @@ private fun MemoryEntryCard(entry: MemoryEntry, selected: Boolean, selecting: Bo
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = if (dragging) Color(0xFFF0F0F3) else Color.White), elevation = CardDefaults.cardElevation(defaultElevation = if (dragging) 12.dp else 0.dp), modifier = modifier.fillMaxWidth().clickable { if (ignoreNextClick) onIgnoredClick() else if (selecting) onToggle() else onOpen() }) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(entry.title, color = Ink, fontSize = 18.sp, modifier = Modifier.weight(1f)); if (selecting) SelectionMarker(selected) }; Text(entry.content, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); Text(formatDateOnly(entry.createdAt), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) } }
 }
 @Composable
-private fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
+internal fun ScheduleDialog(event: ScheduleEvent?, onDismiss: () -> Unit, onSave: (ScheduleEvent) -> Unit) {
     val context = LocalContext.current
     val calendar = remember(event?.id) { Calendar.getInstance().apply { timeInMillis = event?.eventAt ?: Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis } }
     var title by remember(event?.id) { mutableStateOf(event?.title.orEmpty()) }

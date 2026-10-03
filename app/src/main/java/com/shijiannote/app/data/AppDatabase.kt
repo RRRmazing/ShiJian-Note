@@ -8,12 +8,13 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [ScheduleEvent::class, TodoBoard::class, TodoItem::class, DailyTodoPreferences::class, DiaryEntry::class, MemoryCategory::class, MemoryEntry::class],
-    version = 9,
+    entities = [ScheduleEvent::class, TodoBoard::class, TodoItem::class, DailyTodoPreferences::class, DiaryEntry::class, MemoryCategory::class, MemoryEntry::class, NoteNode::class, NoteVersion::class],
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun appDao(): AppDao
+    abstract fun noteDao(): NoteDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -78,9 +79,40 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val migration9To10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE TABLE IF NOT EXISTS note_nodes (id TEXT NOT NULL PRIMARY KEY, kind TEXT NOT NULL, parentId TEXT, title TEXT NOT NULL, text TEXT NOT NULL, document TEXT NOT NULL, day INTEGER, position INTEGER NOT NULL, pinned INTEGER NOT NULL, favorite INTEGER NOT NULL, tags TEXT NOT NULL, mood TEXT NOT NULL, imageDisplay TEXT NOT NULL, imageStorage TEXT NOT NULL, deletedAt INTEGER, deleteGroup TEXT, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_note_nodes_parentId ON note_nodes(parentId)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_note_nodes_day ON note_nodes(day)")
+                database.execSQL("CREATE TABLE IF NOT EXISTS note_versions (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, nodeId TEXT NOT NULL, snapshot TEXT NOT NULL, createdAt INTEGER NOT NULL)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_note_versions_nodeId ON note_versions(nodeId)")
+                database.execSQL("INSERT INTO note_nodes SELECT 'c' || id, 'folder', NULL, name, '', '', NULL, position, 0, 0, '', '', 'inherit', 'inherit', NULL, NULL, createdAt, createdAt FROM memory_categories")
+                database.execSQL("INSERT INTO note_nodes SELECT 'm' || id, 'memory', 'c' || categoryId, title, content, '', NULL, position, 0, 0, '', '', 'inherit', 'inherit', NULL, NULL, createdAt, createdAt FROM memory_entries")
+                database.execSQL("INSERT INTO note_nodes SELECT 'd' || id, 'diary', NULL, summary, content, '', day, 0, 0, 0, '', '', 'inherit', 'inherit', NULL, NULL, updatedAt, updatedAt FROM diary_entries")
+                database.execSQL("ALTER TABLE todo_boards ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE todo_boards ADD COLUMN deletedAt INTEGER")
+                database.execSQL("ALTER TABLE schedule_events ADD COLUMN deletedAt INTEGER")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN plannedDay INTEGER")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN dueAt INTEGER")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN repeatDays INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN repeatSpawned INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN deletedAt INTEGER")
+                // Preserve old daily-page memberships without moving or dropping the actual tasks.
+                val date = java.time.LocalDate.now()
+                val zone = java.time.ZoneId.systemDefault()
+                val today = date.atStartOfDay(zone).toInstant().toEpochMilli()
+                val tomorrow = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val yesterday = date.minusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                database.execSQL("UPDATE todo_items SET plannedDay = $today WHERE boardId IN (SELECT id FROM todo_boards WHERE boardType = 'TODAY' AND archived = 0)")
+                database.execSQL("UPDATE todo_items SET plannedDay = $tomorrow WHERE boardId IN (SELECT id FROM todo_boards WHERE boardType = 'TOMORROW' AND archived = 0)")
+                database.execSQL("UPDATE todo_items SET plannedDay = $yesterday WHERE boardId IN (SELECT id FROM todo_boards WHERE boardType = 'OVERDUE' AND archived = 0)")
+                database.execSQL("UPDATE todo_boards SET boardType = 'LIST' WHERE archived = 0")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shijian_note.db")
-                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9)
+                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9, migration9To10)
                 .build()
                 .also { instance = it }
         }

@@ -11,6 +11,14 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AppDao {
+    @Query("SELECT * FROM schedule_events") suspend fun allSchedule(): List<ScheduleEvent>
+    @Transaction @Query("SELECT * FROM todo_boards") fun observeAllTodos(): Flow<List<TodoBoardWithItems>>
+    @Transaction @Query("SELECT * FROM todo_boards") suspend fun allTodos(): List<TodoBoardWithItems>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun restoreSchedule(events: List<ScheduleEvent>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun restoreBoards(boards: List<TodoBoard>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun restoreItems(items: List<TodoItem>)
+    @Query("DELETE FROM schedule_events") suspend fun clearSchedule()
+    @Query("DELETE FROM todo_boards") suspend fun clearTodos()
     @Query("SELECT * FROM schedule_events WHERE archived = 0 ORDER BY eventAt ASC")
     fun observeSchedule(): Flow<List<ScheduleEvent>>
 

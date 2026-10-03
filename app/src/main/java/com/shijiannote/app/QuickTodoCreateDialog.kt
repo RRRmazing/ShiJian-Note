@@ -74,9 +74,9 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
 
-private val QuickInk = Color(0xFF1C1B20)
-private val QuickMuted = Color(0xFF8B8991)
-private val QuickBlue = Color(0xFF356AE6)
+private val QuickInk = Color(0xFF283449)
+private val QuickMuted = Color(0xFF718095)
+private val QuickBlue = Color(0xFF587BB9)
 
 internal data class BoardReminderDraft(
     val repeatRule: String? = null,
@@ -131,7 +131,7 @@ internal fun QuickTodoCreateDialog(
 
     fun saveIfNeeded() {
         val enteredTasks = tasks.filter { it.isNotBlank() }
-        if (title.isNotBlank() || enteredTasks.isNotEmpty()) onSave(title, enteredTasks, dueAt, reminderDraft)
+        if (board != null || title.isNotBlank() || enteredTasks.isNotEmpty()) onSave(title, enteredTasks, dueAt, reminderDraft)
     }
     fun leave() { saveIfNeeded(); keyboard?.hide(); focusManager.clearFocus(); onDismiss() }
 

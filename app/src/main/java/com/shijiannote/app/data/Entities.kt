@@ -17,7 +17,8 @@ data class ScheduleEvent(
     val archived: Boolean = false,
     val reminderTriggered: Boolean = false,
     /** Keeps an intentional on-time reminder distinct from no reminder at all. */
-    val reminderEnabled: Boolean = false
+    val reminderEnabled: Boolean = false,
+    val deletedAt: Long? = null
 )
 
 @Entity(tableName = "todo_boards")
@@ -40,7 +41,9 @@ data class TodoBoard(
     val archived: Boolean = false,
     val position: Int = 0,
     /** LIST is a legacy/free-form list; TODAY and TOMORROW are the fixed daily pages. */
-    val boardType: String = "LIST"
+    val boardType: String = "LIST",
+    val pinned: Boolean = false,
+    val deletedAt: Long? = null
 )
 
 @Entity(
@@ -63,7 +66,12 @@ data class TodoItem(
     val reminderAt: Long? = null,
     val reminderHours: Int = 0,
     val reminderMinutes: Int = 0,
-    val reminderTriggered: Boolean = false
+    val reminderTriggered: Boolean = false,
+    val plannedDay: Long? = null,
+    val dueAt: Long? = null,
+    val repeatDays: Int = 0,
+    val repeatSpawned: Boolean = false,
+    val deletedAt: Long? = null
 )
 
 /** A singleton row (id = 1) keeps daily page visibility and rollover checkpoint. */

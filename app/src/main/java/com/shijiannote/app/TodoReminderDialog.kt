@@ -59,9 +59,9 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-private val TodoDialogInk = Color(0xFF1C1B20)
-private val TodoDialogMuted = Color(0xFF706F78)
-private val TodoDialogBlue = Color(0xFF356AE6)
+private val TodoDialogInk = Color(0xFF283449)
+private val TodoDialogMuted = Color(0xFF718095)
+private val TodoDialogBlue = Color(0xFF587BB9)
 
 @Composable
 internal fun TodoReminderDialog(

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="new_memory" android:enabled="true" android:icon="@mipmap/ic_launcher" android:shortcutShortLabel="@string/new_memory">
+        <intent android:action="com.shijiannote.app.NEW_MEMORY" android:targetPackage="com.shijiannote.app" android:targetClass="com.shijiannote.app.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="new_diary" android:enabled="true" android:icon="@mipmap/ic_launcher" android:shortcutShortLabel="@string/new_diary">
+        <intent android:action="com.shijiannote.app.NEW_DIARY" android:targetPackage="com.shijiannote.app" android:targetClass="com.shijiannote.app.MainActivity" />
+    </shortcut>
+</shortcuts>
