@@ -137,7 +137,7 @@ class DiaryLibraryInteractionTest {
             rule.onNodeWithContentDescription("展开日历").performClick()
             assertFalse(DiaryRecallReminder.calendarUnread(rule.activity, today))
             assertTrue(DiaryRecallReminder.recallUnread(rule.activity, today))
-            rule.onNodeWithText("往年今日").performClick()
+            rule.onNodeWithText("往年今日：${today.monthValue}.${today.dayOfMonth}").performClick()
             rule.waitForIdle()
             assertFalse(DiaryRecallReminder.recallUnread(rule.activity, today))
             rule.onNodeWithText(current.title).assertExists()

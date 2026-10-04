@@ -109,6 +109,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextDecoration
@@ -1133,6 +1134,7 @@ private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, 
 }
 @Composable
 internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, upperContent: (@Composable () -> Unit)? = null, onSelect: (Long) -> Unit) {
+    val dayCellHeight = (32f * LocalDensity.current.fontScale).coerceAtLeast(36f).dp
     val cells = mutableListOf<java.time.LocalDate?>().apply {
         repeat(month.atDay(1).dayOfWeek.value % 7) { add(null) }
         (1..month.lengthOfMonth()).forEach { add(month.atDay(it)) }
@@ -1143,7 +1145,8 @@ internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: 
         colors = CardDefaults.cardColors(containerColor = Color.White),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            upperContent?.invoke()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("《", color = Blue, fontSize = 22.sp, modifier = Modifier.clickable(onClick = onPrevYear).padding(4.dp))
                 Spacer(Modifier.width(12.dp))
@@ -1155,11 +1158,10 @@ internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: 
                 Spacer(Modifier.width(12.dp))
                 Text("》", color = Blue, fontSize = 22.sp, modifier = Modifier.clickable(onClick = onNextYear).padding(4.dp))
             }
-            upperContent?.invoke()
             Row(Modifier.fillMaxWidth()) {
                 listOf("日", "一", "二", "三", "四", "五", "六").forEach { label ->
-                    Box(Modifier.weight(1f).height(26.dp), contentAlignment = Alignment.Center) {
-                        Text(label, color = Muted, fontSize = 13.sp)
+                    Box(Modifier.weight(1f).height(22.dp), contentAlignment = Alignment.Center) {
+                        Text(label, color = Muted, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1)
                     }
                 }
             }
@@ -1167,18 +1169,18 @@ internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: 
                 Row(Modifier.fillMaxWidth()) {
                     week.forEach { day ->
                         if (day == null) {
-                            Spacer(Modifier.weight(1f).height(52.dp))
+                            Spacer(Modifier.weight(1f).height(dayCellHeight))
                         } else {
                             val hasDiary = localDateToMillis(day) in markedDays
                             Box(
-                                Modifier.weight(1f).height(52.dp).padding(2.dp).clip(CircleShape)
+                                Modifier.weight(1f).height(dayCellHeight).padding(2.dp).clip(CircleShape)
                                     .background(if (hasDiary) Blue else Color.Transparent)
                                     .clickable { onSelect(localDateToMillis(day)) },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(day.dayOfMonth.toString(), color = if (hasDiary) Color.White else Ink, fontSize = 13.sp)
-                                    Text(calendarAnnotation(day), color = if (hasDiary) Color.White else Muted, fontSize = 9.sp)
+                                    Text(day.dayOfMonth.toString(), color = if (hasDiary) Color.White else Ink, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1)
+                                    Text(calendarAnnotation(day), color = if (hasDiary) Color.White else Muted, fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1)
                                 }
                             }
                         }

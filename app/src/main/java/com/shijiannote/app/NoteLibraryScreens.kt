@@ -407,11 +407,11 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                 { monthValue = month.minusYears(1).toString() }, { monthValue = month.minusMonths(1).toString() },
                 { monthValue = month.plusMonths(1).toString() }, { monthValue = month.plusYears(1).toString() },
                 upperContent = {
-                    Box(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().padding(bottom = 4.dp), contentAlignment = Alignment.Center) {
                         RecallBadge(recallUnread) {
-                            Button(onClick = { openRecall() }, modifier = Modifier.widthIn(min = 160.dp).height(36.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = NoteInk, contentColor = Color.White),
-                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 0.dp), shape = RoundedCornerShape(10.dp)) { Text("往年今日", fontSize = 13.sp) }
+                            FilterChip(selected = false, onClick = { openRecall() },
+                                modifier = Modifier.widthIn(min = 180.dp).height(32.dp),
+                                label = { Text("往年今日：${today.monthValue}.${today.dayOfMonth}", fontSize = 13.sp) })
                         }
                     }
                 }) { day ->
