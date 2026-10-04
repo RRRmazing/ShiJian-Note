@@ -63,6 +63,8 @@ import org.json.JSONObject
     var todoDay by rememberSaveable { mutableStateOf<Long?>(null) }
     var search by rememberSaveable { mutableStateOf(false) }
     var searchTab by rememberSaveable { mutableIntStateOf(0) }
+    var searchParent by rememberSaveable { mutableStateOf<String?>(null) }
+    var searchSession by rememberSaveable { mutableIntStateOf(0) }
     var searchFolder by rememberSaveable { mutableStateOf(false) }
     var searchFolderParent by rememberSaveable { mutableStateOf<String?>(null) }
     var structure by rememberSaveable { mutableStateOf(false) }
@@ -80,6 +82,8 @@ import org.json.JSONObject
     var trash by rememberSaveable { mutableStateOf(false) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     var about by rememberSaveable { mutableStateOf(false) }
+    var diaryPast by rememberSaveable { mutableStateOf(false) }
+    var handledRecallRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var importDestination by remember { mutableStateOf<ImportDestination?>(null) }
     var importTitle by remember { mutableStateOf("自主导入") }
     var pendingImport by remember { mutableStateOf(false) }
@@ -96,12 +100,18 @@ import org.json.JSONObject
         editorSnapshot = jsonObject(note).toString(); editingNew = new; reveal = query; selecting = false
     }
     fun export(ids: Set<String>) { if (ids.isNotEmpty()) exportIds = ids else scope.launch { snackbar.showSnackbar("没有可导出的内容") } }
-    fun startSearch() { searchTab = tab; searchFolder = false; search = true; addMemory = false }
+    fun startSearchAt(originParent: String?) {
+        // Keep state while a result is open, but start each new search with fresh filters.
+        libraryState.removeState("search-$searchSession")
+        searchSession++; searchParent = originParent
+        searchTab = tab; searchFolder = false; search = true; addMemory = false
+    }
+    fun startSearch() { startSearchAt(if (tab == 3) parent else null) }
     fun showStructure(root: String?) {
         val history = if (structure && (structureFolder || structureSearchSnapshot != null)) org.json.JSONArray(structureHistory).put(JSONObject()
             .put("root", structureRoot).put("entry", structureEntry).put("parent", structureFolderParent).put("folder", structureFolder)
             .put("search", search).put("searchFolder", searchFolder).put("searchParent", searchFolderParent)
-            .put("searchTab", searchTab).put("searchSnapshot", structureSearchSnapshot)) else org.json.JSONArray()
+            .put("searchTab", searchTab).put("searchParentScope", searchParent).put("searchSession", searchSession).put("searchSnapshot", structureSearchSnapshot)) else org.json.JSONArray()
         structureHistory = history.toString()
         structureRoot = root; structureFolder = false; structureEntry = null; structureSearchSnapshot = null; structure = true
     }
@@ -116,18 +126,21 @@ import org.json.JSONObject
             structureFolder = previous.optBoolean("folder")
             search = previous.optBoolean("search"); searchFolder = previous.optBoolean("searchFolder")
             searchFolderParent = previous.optString("searchParent").takeIf { it.isNotBlank() }; searchTab = previous.optInt("searchTab")
+            searchParent = previous.optString("searchParentScope").takeIf { it.isNotBlank() }; searchSession = previous.optInt("searchSession", searchSession)
             structureSearchSnapshot = previous.optString("searchSnapshot").takeIf { it.isNotBlank() }
         }
     }
     fun searchFromStructure() {
-        structureSearchSnapshot = JSONObject().put("search", search).put("folder", searchFolder).put("parent", searchFolderParent).put("tab", searchTab).toString()
-        startSearch(); searchTab = 3
+        structureSearchSnapshot = JSONObject().put("search", search).put("folder", searchFolder).put("parent", searchFolderParent).put("tab", searchTab).put("scopeParent", searchParent).put("session", searchSession).toString()
+        searchSession++; searchParent = structureFolderParent ?: structureRoot
+        searchFolder = false; search = true; addMemory = false; searchTab = 3
     }
     fun closeSearch() {
         val previous = structureSearchSnapshot?.let { JSONObject(it) }
         if (previous != null) {
             search = previous.optBoolean("search"); searchFolder = previous.optBoolean("folder")
             searchFolderParent = previous.optString("parent").takeIf { it.isNotBlank() }; searchTab = previous.optInt("tab")
+            searchParent = previous.optString("scopeParent").takeIf { it.isNotBlank() }; searchSession = previous.optInt("session", searchSession)
             structureSearchSnapshot = null
         } else { search = false; searchFolder = false }
     }
@@ -147,6 +160,20 @@ import org.json.JSONObject
     LaunchedEffect(Unit) {
         model.messages.collect { snackbar.showSnackbar(it) }
     }
+    val recallRequest = (context as? MainActivity)?.diaryRecallRequest
+    LaunchedEffect(recallRequest) {
+        if (recallRequest != null && recallRequest != handledRecallRequest) {
+            handledRecallRequest = recallRequest
+            editorSnapshot = null; editorStack.clear(); reveal = ""
+            search = false; searchFolder = false; structure = false; structureFolder = false; structureSearchSnapshot = null
+            general = false; trash = false; advanced = false; about = false; failurePage = false
+            importDestination = null; selecting = false; addMemory = false
+            scheduleDialog = false; todoDialog = false; folderCreate = false; backup = false
+            exportTasks = null; exportIds = null; deleting = null; pendingImport = false; treeReturnChoice = false
+            tab = 2; diaryPast = true
+            DiaryRecallReminder.markRecallRead(context, java.time.LocalDate.now())
+        }
+    }
     LaunchedEffect(Unit) {
         val action = (context as? android.app.Activity)?.intent?.action
         (context as? android.app.Activity)?.intent?.action = Intent.ACTION_MAIN
@@ -165,7 +192,7 @@ import org.json.JSONObject
     }
     YouthTheme {
         Scaffold(containerColor = Mist, snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
-            if (editor == null && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
+            if (editor == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 val labels = listOf("时间表", "待办", "日记", "记忆", "设置")
                 val icons = listOf(Icons.Default.CalendarMonth, Icons.Default.CheckCircleOutline, Icons.Default.MenuBook, Icons.Default.FolderOpen, Icons.Default.Settings)
                 val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
@@ -200,15 +227,16 @@ import org.json.JSONObject
                         }
                     }
                     search && searchFolder -> libraryState.SaveableStateProvider("search-folder-$searchFolderParent") {
-                        MemoryLibrary(model, searchFolderParent, { searchFolderParent = it }, { open(it) }, ::export, { searchFolder = false }, { selecting = it }, { deleting = it }, { showStructure(searchFolderParent) }, { searchFolder = false })
+                        MemoryLibrary(model, searchFolderParent, { searchFolderParent = it }, { open(it) }, ::export, { startSearchAt(searchFolderParent); searchTab = 3 }, { selecting = it }, { deleting = it }, { showStructure(searchFolderParent) }, { searchFolder = false })
                     }
-                    search -> libraryState.SaveableStateProvider("search-$searchTab") {
-                        GlobalSearch(model, searchTab, ::closeSearch,
+                    search -> libraryState.SaveableStateProvider("search-$searchSession") {
+                        ModuleSearch(model, searchTab, searchParent, ::closeSearch,
                             { n, query -> editorStack.clear(); open(n, false, query) },
                             { folder -> searchFolderParent = folder.id; searchFolder = true },
                             { event -> scheduleEdit = event; scheduleDialog = true },
                             { board ->
-                                todoDay = null; todoEdit = board
+                                // Search groups may contain only matching items; editing must keep the full list.
+                                todoDay = null; todoEdit = todos.find { it.board.id == board.board.id } ?: board
                                 todoTaskEdit = board.items.firstOrNull().takeIf { board.board.boardType == "DAILY" }
                                 todoDialog = todoTaskEdit != null || board.board.boardType != "DAILY"
                             })
@@ -225,7 +253,7 @@ import org.json.JSONObject
                         when (tab) {
                             0 -> ScheduleLibrary(model, { event -> scheduleEdit = event; scheduleDialog = true }, ::startSearch, { exportTasks = "schedule" }, { selecting = it })
                             1 -> TodoLibrary(model, { board -> todoDay = null; todoTaskEdit = null; todoEdit = board; todoDialog = true }, ::startSearch, { exportTasks = "todo" }, { selecting = it }, { todoView = it })
-                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, ::startSearch, ::export, { deleting = it }, { selecting = it })
+                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, ::startSearch, ::export, { deleting = it }, { selecting = it }, pastPage = diaryPast, onPastChange = { diaryPast = it })
                             else -> libraryState.SaveableStateProvider("memory-$memoryVisit-$parent") {
                                 if (spacesReady) MemoryLibrary(model, parent, { parent = it }, { open(it) }, ::export, ::startSearch, { selecting = it }, { deleting = it }, { showStructure(parent) })
                                 else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -237,7 +265,7 @@ import org.json.JSONObject
                 if (editor == null && record.running) Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(16.dp), color = Peach) {
                     TextButton(onClick = { scope.launch { model.notes.node(record.owner)?.let { open(it, true) } } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
                 }
-                if (editor == null && tab < 4 && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
+                if (editor == null && tab < 4 && !(tab == 2 && diaryPast) && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
                     if (addMemory && tab == 3) {
                         BackHandler { addMemory = false }
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable { addMemory = false })

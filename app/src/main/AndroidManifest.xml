@@ -13,6 +13,14 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ShiJianNote">
         <receiver android:name=".ReminderReceiver" android:exported="false" />
+        <receiver android:name=".DiaryRecallClockReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".ReminderBootReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
         </receiver>

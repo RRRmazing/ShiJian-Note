@@ -219,7 +219,7 @@ class InteractionRegressionTest {
         }
     }
 
-    @Test fun globalSearchAndMemorySearchRestoreAfterOpeningRecord(): Unit = runBlocking {
+    @Test fun moduleMemorySearchRestoresAfterOpeningRecord(): Unit = runBlocking {
         val model = model()
         val root = NoteNode(id = "ui-search-root", kind = "folder", parentId = MemorySpaces.WORK_ID, title = "搜索测试分类")
         val note = NoteNode(id = "ui-search-note", parentId = root.id, title = "独特搜索标题", text = "独特搜索正文")
@@ -229,9 +229,10 @@ class InteractionRegressionTest {
             rule.onNodeWithText("记忆").performClick()
             rule.onNodeWithText("工作").performClick()
             rule.waitUntil { rule.onAllNodesWithText(root.title).fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithContentDescription("搜索全部内容").performClick()
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            rule.onNodeWithContentDescription("搜索记忆").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("独特搜索")
-            back()
+            rule.onNode(hasSetTextAction()).performImeAction()
             rule.onNodeWithText(note.title).performClick()
             rule.onNodeWithContentDescription("保存并返回").performClick()
             rule.onNode(hasSetTextAction()).assertTextContains("独特搜索")
@@ -239,14 +240,17 @@ class InteractionRegressionTest {
             screenshot("search-restored")
             rule.onNodeWithContentDescription("返回").performClick()
             rule.onNodeWithText(root.title).performClick()
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            rule.onNodeWithContentDescription("搜索记忆").performClick()
+            rule.onNodeWithText("仅在当前分类下").assertIsOn()
             rule.onNode(hasSetTextAction()).performTextInput("独特搜索")
-            back()
+            rule.onNode(hasSetTextAction()).performImeAction()
             rule.onNodeWithText(note.title).performClick()
             rule.onNodeWithContentDescription("保存并返回").performClick()
             rule.onNode(hasSetTextAction()).assertTextContains("独特搜索")
             rule.onNodeWithText(note.title).assertExists()
-            back()
-            rule.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+            rule.onNodeWithContentDescription("返回").performClick()
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
             rule.onAllNodesWithText(root.title).fetchSemanticsNodes().also { assertTrue(it.isNotEmpty()) }
             rule.onNodeWithText("待办").performClick()
             rule.onNodeWithText("记忆").performClick()
@@ -491,9 +495,10 @@ class InteractionRegressionTest {
             rule.onNodeWithText("结构树").assertExists()
             rule.onNodeWithContentDescription("返回").performClick()
             rule.onNodeWithText(folder.title).assertExists()
-            rule.onNodeWithContentDescription("搜索全部内容").performClick()
+            rule.onNodeWithContentDescription("搜索记忆").performClick()
+            rule.onNodeWithText("仅在当前分类下").performClick().assertIsOff()
             rule.onNode(hasSetTextAction()).performTextInput(branches.first().title)
-            back()
+            rule.onNode(hasSetTextAction()).performImeAction()
             InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(500, 3_000)
             rule.onNode(hasText(branches.first().title) and !hasSetTextAction()).performClick()
             rule.onNodeWithContentDescription("更多").performClick()

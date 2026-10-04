@@ -120,6 +120,7 @@ import androidx.compose.ui.unit.sp
 import com.shijiannote.app.data.MemoryCategory
 import com.shijiannote.app.data.MemoryEntry
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.lifecycleScope
 import com.shijiannote.app.data.DiaryEntry
 import com.shijiannote.app.data.TodoBoard
 import com.shijiannote.app.data.MemoryCategoryWithEntries
@@ -149,10 +150,40 @@ private val Ink = Color(0xFF283449)
 private val Muted = Color(0xFF718095)
 
 class MainActivity : ComponentActivity() {
+    var diaryRecallRequest by mutableStateOf<String?>(null)
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        diaryRecallRequest = savedInstanceState?.getString("diaryRecallRequest")
+        receiveDiaryRecall(intent)
+        DiaryRecallReminder.initialize(this)
         enableEdgeToEdge()
         setContent { ModernShiJianApp() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        receiveDiaryRecall(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("diaryRecallRequest", diaryRecallRequest)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch { runCatching { DiaryRecallReminder.refresh(this@MainActivity) } }
+    }
+
+    private fun receiveDiaryRecall(intent: Intent?) {
+        if (intent?.action == DiaryRecallReminder.ACTION_OPEN_RECALL) {
+            // Requests must stay distinct even if the Activity was recreated since the last tap.
+            diaryRecallRequest = java.util.UUID.randomUUID().toString()
+            intent.action = Intent.ACTION_MAIN
+        }
     }
 }
 
@@ -1101,7 +1132,7 @@ private fun DiaryCard(entry: DiaryEntry, selected: Boolean, selecting: Boolean, 
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (selecting) onToggle() else onOpen() }, onLongClick = onLongSelect)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(formatDateOnly(entry.day), color = Blue, fontSize = 14.sp); Text(entry.summary, color = Ink, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }; if (selecting) SelectionMarker(selected) }; if (entry.content.isNotBlank()) Text(entry.content, color = Muted, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)) } }
 }
 @Composable
-internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, onSelect: (Long) -> Unit) {
+internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit, onNextYear: () -> Unit, upperContent: (@Composable () -> Unit)? = null, onSelect: (Long) -> Unit) {
     val cells = mutableListOf<java.time.LocalDate?>().apply {
         repeat(month.atDay(1).dayOfWeek.value % 7) { add(null) }
         (1..month.lengthOfMonth()).forEach { add(month.atDay(it)) }
@@ -1124,6 +1155,7 @@ internal fun DiaryCalendar(month: YearMonth, markedDays: Set<Long>, onPrevYear: 
                 Spacer(Modifier.width(12.dp))
                 Text("》", color = Blue, fontSize = 22.sp, modifier = Modifier.clickable(onClick = onNextYear).padding(4.dp))
             }
+            upperContent?.invoke()
             Row(Modifier.fillMaxWidth()) {
                 listOf("日", "一", "二", "三", "四", "五", "六").forEach { label ->
                     Box(Modifier.weight(1f).height(26.dp), contentAlignment = Alignment.Center) {

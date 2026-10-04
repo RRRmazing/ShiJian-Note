@@ -200,7 +200,7 @@ private data class RepeatTodoEntry(val group: TodoBoardWithItems, val task: Todo
             view == "repeat" -> {
                 if (repeatEntries.isEmpty()) item { SoftCard { Text("还没有重复提醒"); Text("在统一时间待办框或独立事项中设置提醒频次。", color = Quiet) } }
                 items(repeatEntries, key = { if (it.task == null) "repeat-board-${it.board.id}" else "repeat-task-${it.task.id}" }) { entry ->
-                    Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp), color = androidx.compose.ui.graphics.Color.White) {
+                    Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp), color = androidx.compose.ui.graphics.Color.White, border = BorderStroke(1.dp, ContentOutline)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f).clickable { if (entry.task == null) onEditBoard(entry.group) else edit(entry.task) }, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(entry.title, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)

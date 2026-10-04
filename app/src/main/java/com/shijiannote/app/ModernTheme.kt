@@ -27,11 +27,12 @@ val Peach = Color(0xFFFBEAEC)
 val Lavender = Color(0xFFEEECF9)
 val NoteInk = Color(0xFF283449)
 val Quiet = Color(0xFF718095)
+val ContentOutline = Color(0xFFB7C1CE)
 
 @Composable fun YouthTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = lightColorScheme(primary = Sky, onPrimary = Color.White, primaryContainer = Color(0xFFE8EFFB), onPrimaryContainer = NoteInk,
         secondary = Color(0xFF658D7A), secondaryContainer = Mint, tertiaryContainer = Peach, background = Mist, surface = Color.White,
-        surfaceVariant = Color(0xFFF0F3F8), onSurface = NoteInk, onSurfaceVariant = Quiet, outline = Color(0xFFCCD5E1), error = Color(0xFFB66370)),
+        surfaceVariant = Color(0xFFF0F3F8), onSurface = NoteInk, onSurfaceVariant = Quiet, outline = Color(0xFFE0E5EC), error = Color(0xFFB66370)),
         shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(20.dp), large = RoundedCornerShape(28.dp)), content = content)
 }
 @Composable fun PageTitle(title: String, subtitle: String = "", back: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
@@ -42,7 +43,7 @@ val Quiet = Color(0xFF718095)
     }
 }
 @Composable fun SoftCard(modifier: Modifier = Modifier, color: Color = Color.White, content: @Composable ColumnScope.() -> Unit) {
-    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = color) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content) }
+    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = color, border = BorderStroke(1.dp, ContentOutline)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content) }
 }
 @Composable fun SoftDialog(title: String, onClose: () -> Unit, dismissOnBackPress: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = dismissOnBackPress)) {

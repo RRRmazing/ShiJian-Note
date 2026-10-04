@@ -21,7 +21,13 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.shijiannote.app.data.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.*
 
@@ -130,12 +136,11 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     var pathMenu by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var orderMenu by remember { mutableStateOf(false) }
-    var query by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf("") }
     val path = if (current == null) emptyList() else TreeRules.ancestors(current, nodes) + current
     val scopeIds = parent?.let { TreeRules.descendants(it, active) }
-    val searched = query.isNotBlank() || tag.isNotBlank()
-    val rows = if (searched && !selecting) active.filter { !MemorySpaces.isRoot(it.id) && (scopeIds == null || it.id in scopeIds) && (it.title + it.text + it.tags).contains(query, true) && (tag.isBlank() || tag in it.tags.split(' ')) }.map { TreeRow(it, 0) }
+    val searched = tag.isNotBlank()
+    val rows = if (searched && !selecting) active.filter { !MemorySpaces.isRoot(it.id) && (scopeIds == null || it.id in scopeIds) && tag in it.tags.split(' ') }.map { TreeRow(it, 0) }
         else treeRows(active, if (selectionMode == "export") null else parent,
             if (selectionMode == "export") expanded + setOf(MemorySpaces.WORK_ID, MemorySpaces.LIFE_ID) else expanded,
             tree || selecting, sort).filterNot { MemorySpaces.isRoot(it.node.id) }
@@ -153,7 +158,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     val focus = LocalFocusManager.current
     val imeVisible = WindowInsets.isImeVisible
     fun back() {
-        when { imeVisible -> { keyboard?.hide(); focus.clearFocus() }; selecting -> { selected = emptySet(); selectionMode = "" }; arranging -> arranging = false; searched -> { query = ""; tag = ""; focus.clearFocus() }; onBackOverride != null -> onBackOverride(); else -> onParent(current?.parentId) }
+        when { imeVisible -> { keyboard?.hide(); focus.clearFocus() }; selecting -> { selected = emptySet(); selectionMode = "" }; arranging -> arranging = false; searched -> { tag = ""; focus.clearFocus() }; onBackOverride != null -> onBackOverride(); else -> onParent(current?.parentId) }
     }
     BackHandler(enabled = selecting || arranging || searched || parent != null || onBackOverride != null) { back() }
     fun toggle(n: NoteNode) { selected = TreeRules.toggleSelection(selected, n, active) }
@@ -169,7 +174,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(18.dp, 10.dp, 18.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item {
                 PageTitle("记忆", "工作与生活，分别收纳", back = if (onBackOverride != null) ({ back() }) else null) {
-                    IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索全部内容") }
+                    IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索记忆") }
                     Box {
                         IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.MoreVert, "更多") }
                         DropdownMenu(sortMenu, { sortMenu = false }) {
@@ -200,7 +205,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
         item {
             PageTitle(if (selectionMode == "export") "选择导出内容" else current?.displayTitle() ?: "记忆", if (selectionMode == "export") "勾选分类会包含其全部下级内容" else "随手记录，慢慢珍藏", back = if (parent != null || searched || selecting || onBackOverride != null) ({ back() }) else null) {
                 if (!selecting) {
-                IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索全部内容") }
+                IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索记忆") }
                 IconButton(onClick = { tree = !tree; prefs.edit().putBoolean("tree", tree).apply() }) { Icon(if (tree) Icons.Default.ViewList else Icons.Default.AccountTree, if (tree) "列表视图" else "树状视图") }
                 Box { IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.MoreVert, "更多") }; DropdownMenu(sortMenu, { sortMenu = false; orderMenu = false }, modifier = Modifier.width(144.dp)) {
                     DropdownMenuItem(text = { Text("‹　排序") }, onClick = { orderMenu = true })
@@ -225,7 +230,6 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                     }
                 }
             }
-            if (parent != null && !selecting) OutlinedTextField(query, { query = it }, placeholder = { Text("搜索此分类与下级的标题、正文、标签", fontSize = 14.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth(), leadingIcon = { Icon(Icons.Default.Search, null) }, trailingIcon = { if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "清除搜索") } })
             val tags = active.filter { scopeIds == null || it.id in scopeIds }.flatMap { it.tags.split(' ') }.filter { it.isNotBlank() }.distinct()
             if (tags.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { FilterChip(tag.isBlank(), { tag = "" }, label = { Text("全部") }); tags.forEach { t -> FilterChip(tag == t, { tag = t }, label = { Text(t) }) } }
             if (selecting) NoteSelectionActions(selected.size, selectableIds.isNotEmpty() && selected.containsAll(selectableIds), selectableIds.isNotEmpty(),
@@ -251,7 +255,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                     if ((tree || selecting) && n.kind == "folder" && (!searched || selecting)) IconButton(onClick = { val next = if (n.id in expanded) expanded - n.id else expanded + n.id; expandedValue = next.joinToString("|"); prefs.edit().putString("expanded", expandedValue).apply() }, modifier = Modifier.size(30.dp)) { Icon(if (n.id in expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight, "展开或收起分类") }
                     Icon(if (n.kind == "folder") Icons.Default.Folder else Icons.Default.Description, null, tint = if (n.kind == "folder") Sky else Quiet, modifier = Modifier.size(22.dp))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                        Text(highlightText(n.displayTitle(), query), fontSize = 17.sp, fontWeight = if (n.kind == "folder") FontWeight.Medium else FontWeight.Normal)
+                        Text(n.displayTitle(), fontSize = 17.sp, fontWeight = if (n.kind == "folder") FontWeight.Medium else FontWeight.Normal)
                         if (row.depth > 3) Text("第 ${row.depth + 1} 层 · 点击分类聚焦", fontSize = 10.sp, color = Quiet)
                         if (searched) Text(TreeRules.path(n, nodes), fontSize = 11.sp, color = Quiet)
                     }
@@ -260,7 +264,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                     else IconButton(onClick = { menu = n }, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.MoreHoriz, "条目操作") }
                 }
                 if (n.kind == "folder") Text("${active.count { it.parentId == n.id && it.kind == "folder" }} 个分类 · ${active.count { it.parentId == n.id && it.kind == "memory" }} 条记忆", color = Quiet, fontSize = 12.sp)
-                else if (!tree || searched) { Text(highlightText(n.text.take(180), query), color = Quiet, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(dateText(n.updatedAt), color = Quiet, fontSize = 11.sp) }
+                else if (!tree || searched) { Text(n.text.take(180), color = Quiet, maxLines = 3, overflow = TextOverflow.Ellipsis); Text(dateText(n.updatedAt), color = Quiet, fontSize = 11.sp) }
                 if (arranging && !searched) {
                     val latestShift by rememberUpdatedState<(Int) -> Unit> { shift(n, it) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -281,23 +285,65 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     moving?.let { ids -> MoveDestinationPicker(model, ids, onClose = { moving = null; selected = emptySet(); selectionMode = "" }) }
 }
 
-@Composable fun DiaryLibrary(model: WorkspaceModel, onOpen: (NoteNode, Boolean) -> Unit, onSearch: () -> Unit, onExport: (Set<String>) -> Unit, onTrash: (Set<String>) -> Unit, onSelection: (Boolean) -> Unit) {
+@Composable fun DiaryLibrary(
+    model: WorkspaceModel,
+    onOpen: (NoteNode, Boolean) -> Unit,
+    onSearch: () -> Unit,
+    onExport: (Set<String>) -> Unit,
+    onTrash: (Set<String>) -> Unit,
+    onSelection: (Boolean) -> Unit,
+    pastPage: Boolean = false,
+    onPastChange: (Boolean) -> Unit = {}
+) {
     val all by model.nodes.collectAsState()
-    val diaries = all.filter { it.kind == "diary" && it.deletedAt == null }.sortedByDescending { it.day }
+    val diaries = all.filter { it.kind == "diary" && it.deletedAt == null }
+        .sortedWith(compareByDescending<NoteNode> { it.day ?: it.createdAt }.thenByDescending { it.createdAt })
     val context = LocalContext.current
     val prefs = appPreferences(context)
+    val reminderPrefs = remember(context) { DiaryRecallReminder.preferences(context) }
+    var reminderRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(reminderPrefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> reminderRevision++ }
+        reminderPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { reminderPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    var today by remember { mutableStateOf(LocalDate.now()) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) today = LocalDate.now() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    // Keep an open page current when midnight passes; opening the module also rechecks the date.
+    LaunchedEffect(Unit) {
+        while (true) {
+            today = LocalDate.now()
+            val nextDay = today.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant()
+            delay((nextDay.toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(1_000L))
+        }
+    }
+    LaunchedEffect(diaries, today) { DiaryRecallReminder.refresh(context) }
+    val reminderEnabled = remember(reminderRevision) { DiaryRecallReminder.enabled(context) }
+    val calendarUnread = remember(reminderRevision, today) { DiaryRecallReminder.calendarUnread(context, today) }
+    val recallUnread = remember(reminderRevision, today) { DiaryRecallReminder.recallUnread(context, today) }
     var calendar by rememberSaveable { mutableStateOf(prefs.getBoolean("diaryCalendar", false)) }
     var monthValue by rememberSaveable { mutableStateOf(YearMonth.now().toString()) }
     val month = YearMonth.parse(monthValue)
     var favorites by rememberSaveable { mutableStateOf(false) }
-    var past by rememberSaveable { mutableStateOf(false) }
-    val query = ""
     var selected by rememberSaveable(stateSaver = Saver<Set<String>, List<String>>(save = { it.toList() }, restore = { it.toSet() })) { mutableStateOf(setOf<String>()) }
     var selectionMode by rememberSaveable { mutableStateOf("") }
     val selecting = selectionMode.isNotEmpty()
     var menu by remember { mutableStateOf(false) }
-    val today = LocalDate.now()
-    val shown = if (selectionMode == "export") diaries else diaries.filter { (!favorites || it.favorite) && (!past || it.day?.let { d -> Instant.ofEpochMilli(d).atZone(ZoneId.systemDefault()).toLocalDate().let { it.month == today.month && it.dayOfMonth == today.dayOfMonth && it.year < today.year } } == true) && (it.title + it.text + it.tags).contains(query, true) }
+    var settings by remember { mutableStateOf(false) }
+    val mainListState = rememberLazyListState()
+    val recallListState = rememberLazyListState()
+    val listState = if (pastPage) recallListState else mainListState
+    val scope = rememberCoroutineScope()
+    val shown = when {
+        selectionMode == "export" -> diaries
+        pastPage -> DiaryRecallRules.recalled(diaries, today)
+        else -> diaries.filter { !favorites || it.favorite }
+    }
     val selectableIds = shown.map { it.id }.toSet()
     LaunchedEffect(diaries.map { it.id }) {
         val remaining = selected.intersect(diaries.map { it.id }.toSet())
@@ -306,33 +352,123 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     }
     LaunchedEffect(selecting) { onSelection(selecting) }
     DisposableEffect(Unit) { onDispose { onSelection(false) } }
-    BackHandler(enabled = selecting) { selected = emptySet(); selectionMode = "" }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(18.dp, 10.dp, 18.dp, 110.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    fun back() {
+        if (selecting) { selected = emptySet(); selectionMode = "" }
+        else onPastChange(false)
+    }
+    fun openRecall() {
+        DiaryRecallReminder.markRecallRead(context, today)
+        scope.launch { recallListState.scrollToItem(0) }
+        onPastChange(true)
+    }
+    // Notification links open this same page and count as viewing the recall reminder.
+    LaunchedEffect(pastPage, today) { if (pastPage) DiaryRecallReminder.markRecallRead(context, today) }
+    BackHandler(enabled = selecting || pastPage) { back() }
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(18.dp, 10.dp, 18.dp, 110.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            PageTitle(if (selectionMode == "export") "选择导出日记" else "日记", "记录今天，也回望过去", back = if (selecting) ({ selected = emptySet(); selectionMode = "" }) else null) {
+            PageTitle(
+                if (selectionMode == "export") "选择导出日记" else if (pastPage) "往年今日" else "日记",
+                if (pastPage) "${today.monthValue}月${today.dayOfMonth}日的记录" else "记录今天，也回望过去",
+                back = if (selecting || pastPage) ({ back() }) else null
+            ) {
                 if (!selecting) {
-                IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索") }
-                IconButton(onClick = { calendar = !calendar; prefs.edit().putBoolean("diaryCalendar", calendar).apply() }) { Icon(if (calendar) Icons.Default.ViewList else Icons.Default.CalendarMonth, "月历或时间线") }
-                Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "更多") }; DropdownMenu(menu, { menu = false }) { DropdownMenuItem(text = { Text("导出日记") }, onClick = { selected = emptySet(); selectionMode = "export"; menu = false }) } }
+                    IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜索日记") }
+                    if (!pastPage) {
+                        IconButton(onClick = { favorites = !favorites; scope.launch { mainListState.scrollToItem(0) } }) {
+                            Icon(if (favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                if (favorites) "显示全部日记" else "仅显示收藏日记",
+                                tint = if (favorites) Color(0xFFE04B5A) else LocalContentColor.current)
+                        }
+                        RecallBadge(calendarUnread) {
+                            IconButton(onClick = {
+                                DiaryRecallReminder.markCalendarRead(context, today)
+                                calendar = !calendar
+                                prefs.edit().putBoolean("diaryCalendar", calendar).apply()
+                            }) { Icon(Icons.Default.CalendarMonth, if (calendar) "收起日历" else "展开日历") }
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "更多") }
+                        DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(text = { Text("日记设置") }, onClick = { settings = true; menu = false })
+                            DropdownMenuItem(text = { Text("导出日记") }, onClick = { selected = emptySet(); selectionMode = "export"; menu = false })
+                        }
+                    }
                 }
             }
-            if (!selecting) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(favorites, { favorites = !favorites }, label = { Text("收藏") }); FilterChip(past, { past = !past }, label = { Text("往年今日") }) }
             if (selecting) NoteSelectionActions(selected.size, selectableIds.isNotEmpty() && selected.containsAll(selectableIds), selectableIds.isNotEmpty(),
                 onAll = { selected = if (selected.containsAll(selectableIds)) emptySet() else selectableIds },
                 onCancel = { selected = emptySet(); selectionMode = "" },
                 onExport = if (selectionMode == "export") ({ onExport(selected); selected = emptySet(); selectionMode = "" }) else null,
                 onDelete = if (selectionMode == "manage") ({ onTrash(selected) }) else null)
         }
-        if (calendar && !selecting) item { DiaryCalendar(month, diaries.mapNotNull { it.day }.toSet(), { monthValue = month.minusYears(1).toString() }, { monthValue = month.minusMonths(1).toString() }, { monthValue = month.plusMonths(1).toString() }, { monthValue = month.plusYears(1).toString() }) { day ->
-            val existing = diaries.find { it.day == day }
-            onOpen(existing ?: model.newNote("diary", day = day), existing == null)
-        } }
-        if (shown.isEmpty()) item { SoftCard { Text(if (past) "往年这一天还没有记录" else "从今天的一件小事开始"); Text("点击＋写今天的日记，也可以从月历选择日期。", color = Quiet) } }
-        items(shown, key = { it.id }) { n -> SoftCard(modifier = Modifier.combinedClickable(onClick = { if (selecting) selected = if (n.id in selected) selected - n.id else selected + n.id else onOpen(n, false) }, onLongClick = { if (!selecting) selectionMode = "manage"; selected = if (n.id in selected) selected - n.id else selected + n.id }), color = if (n.id in selected) Lavender else androidx.compose.ui.graphics.Color.White) {
-            Row(verticalAlignment = Alignment.CenterVertically) { Text(dateText(n.day ?: n.createdAt), fontSize = 13.sp, color = Sky, modifier = Modifier.weight(1f)); if (n.favorite) Icon(Icons.Default.Star, "收藏", tint = Sky); if (selecting) Checkbox(n.id in selected, { selected = if (n.id in selected) selected - n.id else selected + n.id }) }
-            Text(highlightText(n.displayTitle(), query), fontSize = 19.sp, fontWeight = FontWeight.Medium)
-            Text(highlightText(n.text.take(240), query), color = Quiet, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            if (n.mood.isNotBlank() || n.tags.isNotBlank()) Text(listOf(n.mood, n.tags).filter { it.isNotBlank() }.joinToString(" · "), fontSize = 12.sp, color = Quiet)
-        } }
+        if (calendar && !selecting && !pastPage) item {
+            DiaryCalendar(month, diaries.mapNotNull { it.day }.toSet(),
+                { monthValue = month.minusYears(1).toString() }, { monthValue = month.minusMonths(1).toString() },
+                { monthValue = month.plusMonths(1).toString() }, { monthValue = month.plusYears(1).toString() },
+                upperContent = {
+                    Box(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
+                        RecallBadge(recallUnread) {
+                            Button(onClick = { openRecall() }, modifier = Modifier.widthIn(min = 160.dp).height(36.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = NoteInk, contentColor = Color.White),
+                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 0.dp), shape = RoundedCornerShape(10.dp)) { Text("往年今日", fontSize = 13.sp) }
+                        }
+                    }
+                }) { day ->
+                val existing = diaries.find { it.day == day }
+                onOpen(existing ?: model.newNote("diary", day = day), existing == null)
+            }
+        }
+        if (shown.isEmpty()) item {
+            SoftCard {
+                Text(when { pastPage -> "往年的今天都没有日记，快去创建今日日记吧。"; favorites -> "还没有收藏的日记"; else -> "从今天的一件小事开始" })
+                if (pastPage) TextButton(onClick = {
+                    val day = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    onOpen(model.newNote("diary", day = day), true)
+                }) { Text("写今日日记") }
+                else if (!favorites) Text("点击＋写今天的日记，也可以从日历选择日期。", color = Quiet)
+            }
+        }
+        items(shown, key = { it.id }) { n ->
+            DiaryEntryCard(n, n.id in selected, selecting,
+                onClick = { if (selecting) selected = if (n.id in selected) selected - n.id else selected + n.id else onOpen(n, false) },
+                onLongClick = { if (!selecting) selectionMode = "manage"; selected = if (n.id in selected) selected - n.id else selected + n.id },
+                onToggle = { selected = if (n.id in selected) selected - n.id else selected + n.id })
+        }
+    }
+    if (settings) SoftDialog("日记设置", { settings = false }) {
+        Row(Modifier.fillMaxWidth().toggleable(value = reminderEnabled, role = androidx.compose.ui.semantics.Role.Checkbox,
+            onValueChange = { DiaryRecallReminder.setEnabled(context, it) }), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(reminderEnabled, null)
+            Text("提醒往年今日", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable private fun RecallBadge(unread: Boolean, content: @Composable () -> Unit) {
+    Box {
+        content()
+        if (unread) Surface(Modifier.align(Alignment.TopEnd).size(16.dp), color = Color(0xFFE04B5A), shape = RoundedCornerShape(8.dp)) {
+            Box(contentAlignment = Alignment.Center) { Text("1", fontSize = 10.sp, color = Color.White) }
+        }
+    }
+}
+
+@Composable private fun DiaryEntryCard(note: NoteNode, selected: Boolean, selecting: Boolean, onClick: () -> Unit, onLongClick: () -> Unit, onToggle: () -> Unit) {
+    Surface(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        shape = RoundedCornerShape(20.dp), color = if (selected) Lavender else Color.White,
+        border = BorderStroke(1.dp, ContentOutline)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(dateText(note.day ?: note.createdAt), fontSize = 13.sp, color = Sky, modifier = Modifier.weight(1f))
+                if (note.favorite) Icon(Icons.Default.Favorite, "已收藏", tint = Color(0xFFE04B5A), modifier = Modifier.size(16.dp))
+                if (selecting) Checkbox(selected, { onToggle() }, modifier = Modifier.size(28.dp))
+            }
+            Text(note.displayTitle(), fontSize = 19.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp))
+            if (note.text.isNotBlank()) Text(note.text, color = Quiet, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            val tags = TagRules.names(note.tags).map { "#$it" }
+            val details = (listOf(note.mood).filter { it.isNotBlank() } + tags).joinToString(" · ")
+            if (details.isNotBlank()) Text(details, fontSize = 12.sp, color = Quiet, modifier = Modifier.padding(top = 6.dp))
+        }
     }
 }
