@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 
 @Entity(tableName = "schedule_events")
 data class ScheduleEvent(
@@ -18,14 +19,15 @@ data class ScheduleEvent(
     val reminderTriggered: Boolean = false,
     /** Keeps an intentional on-time reminder distinct from no reminder at all. */
     val reminderEnabled: Boolean = false,
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+    @ColumnInfo(defaultValue = "0") val important: Boolean = false
 )
 
 @Entity(tableName = "todo_boards")
 data class TodoBoard(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val summary: String,
-    /** Optional time on the deadline day from which the advance reminder is calculated. */
+    /** Optional notification time, independent of the deadline. */
     val reminderAt: Long? = null,
     val reminderDays: Int = 0,
     val reminderHours: Int = 0,
@@ -40,10 +42,12 @@ data class TodoBoard(
     val createdAt: Long = System.currentTimeMillis(),
     val archived: Boolean = false,
     val position: Int = 0,
-    /** LIST is a legacy/free-form list; TODAY and TOMORROW are the fixed daily pages. */
+    /** LIST is a visible list; DAILY is an internal container for dated standalone items. */
     val boardType: String = "LIST",
     val pinned: Boolean = false,
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+    @ColumnInfo(defaultValue = "'UNIFIED'") val timeMode: String = "UNIFIED",
+    val reminderSkipAt: Long? = null
 )
 
 @Entity(
@@ -71,6 +75,10 @@ data class TodoItem(
     val dueAt: Long? = null,
     val repeatDays: Int = 0,
     val repeatSpawned: Boolean = false,
+    val reminderRule: String? = null,
+    val reminderBaseAt: Long? = null,
+    @ColumnInfo(defaultValue = "0") val reminderCustomDays: Int = 0,
+    val reminderSkipAt: Long? = null,
     val deletedAt: Long? = null
 )
 
@@ -117,3 +125,7 @@ data class MemoryEntry(
     val position: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
+
+/** Durable cancellation queue populated before old todo rows are removed. */
+@Entity(tableName = "legacy_todo_alarms", primaryKeys = ["kind", "legacyId"])
+data class LegacyTodoAlarm(val kind: String, val legacyId: Long)

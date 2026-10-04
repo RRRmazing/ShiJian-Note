@@ -16,9 +16,11 @@ import java.io.File
     val context = LocalContext.current
     val nodes by model.nodes.collectAsState()
     val selected = ExportEngine.scope(ids, nodes)
+    val diariesOnly = selected.isNotEmpty() && selected.all { it.kind == "diary" }
     val scope = rememberCoroutineScope()
     var images by remember { mutableStateOf(false) }
     var files by remember { mutableStateOf(false) }
+    var structureTree by remember { mutableStateOf(false) }
     var pdf by remember { mutableStateOf(false) }
     var expandImages by remember { mutableStateOf(true) }
     var inspection by remember { mutableStateOf<ExportInspection?>(null) }
@@ -31,19 +33,23 @@ import java.io.File
     }
     LaunchedEffect(ids, nodes) { inspection = ExportEngine.inspect(context, selected) }
     SoftDialog("导出内容", { if (!busy) onClose() }) {
-        inspection?.let { Text("${it.folders} 个分类 · ${it.notes} 条记录\n随包保存 ${it.owned} 个素材\n外部引用：${it.images} 张图片、${it.files} 个文件", fontSize = 14.sp); if (it.missing.isNotEmpty()) Text("无法读取：${it.missing.joinToString("、")}", color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+        inspection?.let { Text((if (diariesOnly) "${it.notes} 篇日记" else "${it.folders} 个分类 · ${it.notes} 条记录") + "\n随包保存 ${it.owned} 个素材\n外部引用：${it.images} 张图片、${it.files} 个文件", fontSize = 14.sp); if (it.missing.isNotEmpty()) Text("无法读取：${it.missing.joinToString("、")}", color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         if (selected.size == 1 && selected.first().kind != "folder") ChoiceRow("导出格式", if (pdf) "pdf" else "markdown", listOf("markdown" to "Markdown / ZIP", "pdf" to "PDF")) { if (!busy) { pdf = it == "pdf"; result = null } }
-        else Text("分类和多篇记录导出为 ZIP，保留独立文档与目录。", color = Quiet, fontSize = 12.sp)
+        else Text(if (diariesOnly) "多篇日记导出为 ZIP，保留独立文档。" else "分类和多篇记录导出为 ZIP，保留独立文档与目录。", color = Quiet, fontSize = 12.sp)
         if (pdf) {
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(expandImages, { expandImages = it; result = null }, enabled = !busy); Text("在 PDF 中展开图片", Modifier.weight(1f)) }
             Text("PDF 不包含可播放录音和原附件，需要实际素材请选 ZIP。", color = Quiet, fontSize = 12.sp)
         } else {
+            if (selected.any { it.kind == "folder" }) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(structureTree, { structureTree = it; result = null }, enabled = !busy); Text("包含结构树形图", Modifier.weight(1f)) }
+                Text("每个所选顶层分类分别生成一份结构树；独立记忆不生成。", color = Quiet, fontSize = 12.sp)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(images, { images = it; result = null }, enabled = !busy); Text("将引用图片复制进本次导出包", Modifier.weight(1f)) }
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(files, { files = it; result = null }, enabled = !busy); Text("将绑定文件复制进本次导出包", Modifier.weight(1f)) }
             Text("不改变 App 的保存方式。未复制的引用在其他设备上可能无法打开。", color = Quiet, fontSize = 12.sp)
         }
         Button(onClick = { busy = true; error = ""; scope.launch {
-            runCatching { model.flushAll(); val latest = model.notes.nodes(); val exportScope = ExportEngine.scope(ids, latest); if (pdf) ExportEngine.pdf(context, exportScope, latest, expandImages) else ExportEngine.notes(context, exportScope, latest, ExportOptions(images, files)) }
+            runCatching { model.flushAll(); val latest = model.notes.nodes(); val exportScope = ExportEngine.scope(ids, latest); if (pdf) ExportEngine.pdf(context, exportScope, latest, expandImages) else ExportEngine.notes(context, exportScope, latest, ExportOptions(images, files, structureTree)) }
                 .onSuccess { result = it }.onFailure { error = it.message ?: "导出失败" }; busy = false
         } }, enabled = !busy && selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在生成…" else "生成导出文件") }
         result?.let { r ->

@@ -15,14 +15,14 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.zip.*
 
-data class ExportOptions(val referenceImages: Boolean = false, val referenceFiles: Boolean = false)
+data class ExportOptions(val referenceImages: Boolean = false, val referenceFiles: Boolean = false, val structureTree: Boolean = false)
 data class ExportResult(val file: File, val missing: List<String>, val materialCount: Int)
 data class ExportInspection(val folders: Int, val notes: Int, val owned: Int, val images: Int, val files: Int, val missing: List<String>)
 
 object ExportEngine {
     fun scope(ids: Set<String>, all: List<NoteNode>): List<NoteNode> {
         val chosen = ids.flatMap { TreeRules.descendants(it, all) }.toSet()
-        return all.filter { it.id in chosen && it.deletedAt == null }
+        return all.filter { it.id in chosen && it.deletedAt == null && !MemorySpaces.isRoot(it.id) }
     }
     fun clean(name: String): String = name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimEnd('.').take(55).ifBlank { "未命名" }
     private fun output(context: Context, title: String, extension: String): File = File(File(context.cacheDir, "exports").apply { mkdirs() }, "${clean(title)}-${UUID.randomUUID().toString().take(8)}.$extension")
@@ -111,6 +111,11 @@ object ExportEngine {
                 zip.closeEntry()
             }
             val index = selected.joinToString("\n") { n -> if (n.kind == "folder") "- ${TreeRules.path(n, all)}" else "- [${escape(TreeRules.path(n, all))}](<${paths.getValue(n.id)}>)" }
+            if (options.structureTree) TreeRules.exportStructures(selected).forEach { (id, tree) ->
+                val root = selected.first { it.id == id }
+                val name = "结构树/${clean(root.displayTitle())}-${id.replace(Regex("[^a-zA-Z0-9-]"), "_")}.txt"
+                zip.putNextEntry(ZipEntry(name)); zip.write(tree.toByteArray(Charsets.UTF_8)); zip.closeEntry()
+            }
             zip.putNextEntry(ZipEntry("目录.md")); zip.write(("# 导出目录\n\n$index\n").toByteArray()); zip.closeEntry()
             val refs = materials.filter { it.uri !in assets }.joinToString("\n\n") { "${it.text}\n${if (it.text in missing || !readable(context, it)) "原素材不可访问" else "未复制原文件，仅保留引用"}\n${it.uri}" }
             zip.putNextEntry(ZipEntry("引用说明.md")); zip.write(("# 外部引用与缺失素材\n\n$refs").toByteArray()); zip.closeEntry()
@@ -195,7 +200,7 @@ object ExportEngine {
             }
             val todos = model.dao.allTodos()
             val prefs = JSONObject().apply { appPreferences(context).all.forEach { (key, value) -> put(key, value) } }
-            val json = JSONObject().put("format", "shijian-backup").put("version", 1).put("databaseVersion", 10).put("createdAt", System.currentTimeMillis())
+            val json = JSONObject().put("format", "shijian-backup").put("version", 1).put("databaseVersion", 12).put("todoSchemaVersion", 2).put("createdAt", System.currentTimeMillis())
                 .put("nodes", JSONArray().apply { nodes.forEach { put(jsonObject(it)) } })
                 .put("versions", JSONArray().apply { versions.forEach { put(jsonObject(it)) } })
                 .put("schedule", JSONArray().apply { model.dao.allSchedule().forEach { put(jsonObject(it)) } })
@@ -254,9 +259,12 @@ object ExportEngine {
             }
             require(notes.filter { it.kind == "diary" && it.deletedAt == null }.groupBy { it.day }.none { it.value.size > 1 }) { "备份中同一天存在多篇日记" }
             val versions = array("versions").map { NoteVersion(it.getLong("id"), it.getString("nodeId"), jsonObject(remap(decodeNode(JSONObject(it.getString("snapshot"))))).toString(), it.getLong("createdAt")) }
-            val schedules = array("schedule").map { s -> ScheduleEvent(s.getLong("id"), s.getString("title"), s.getLong("eventAt"), s.optInt("reminderDays"), s.optInt("reminderHours"), s.optInt("reminderMinutes"), s.optString("note"), s.optBoolean("archived"), s.optBoolean("reminderTriggered"), s.optBoolean("reminderEnabled"), s.nullLong("deletedAt")) }
-            val boards = array("boards").map { b -> TodoBoard(id = b.getLong("id"), summary = b.getString("summary"), reminderAt = b.nullLong("reminderAt"), reminderDays = b.optInt("reminderDays"), reminderHours = b.optInt("reminderHours"), dueDate = b.nullLong("dueDate"), reminderMinutes = b.optInt("reminderMinutes"), expanded = b.optBoolean("expanded"), reminderTriggered = b.optBoolean("reminderTriggered"), reminderRule = b.nullString("reminderRule"), reminderBaseAt = b.nullLong("reminderBaseAt"), reminderCustomDays = b.optInt("reminderCustomDays"), createdAt = b.getLong("createdAt"), archived = b.optBoolean("archived"), position = b.optInt("position"), boardType = b.optString("boardType", "LIST"), pinned = b.optBoolean("pinned"), deletedAt = b.nullLong("deletedAt")) }
-            val tasks = array("tasks").map { t -> TodoItem(t.getLong("id"), t.getLong("boardId"), t.getString("text"), t.optBoolean("completed"), t.optInt("position"), t.optBoolean("important"), t.nullLong("reminderAt"), t.optInt("reminderHours"), t.optInt("reminderMinutes"), t.optBoolean("reminderTriggered"), t.nullLong("plannedDay"), t.nullLong("dueAt"), t.optInt("repeatDays"), t.optBoolean("repeatSpawned"), t.nullLong("deletedAt")) }
+            val schedules = array("schedule").map { s -> ScheduleEvent(s.getLong("id"), s.getString("title"), s.getLong("eventAt"), s.optInt("reminderDays"), s.optInt("reminderHours"), s.optInt("reminderMinutes"), s.optString("note"), s.optBoolean("archived"), s.optBoolean("reminderTriggered"), s.optBoolean("reminderEnabled"), s.nullLong("deletedAt"), s.optBoolean("important")) }
+            val legacyTodos = j.optInt("todoSchemaVersion", 0) < 2 || j.optInt("databaseVersion", 0) < 12
+            val boards = if (legacyTodos) emptyList() else array("boards").map { b -> TodoBoard(id = b.getLong("id"), summary = b.getString("summary"), reminderAt = b.nullLong("reminderAt"), dueDate = b.nullLong("dueDate"), expanded = b.optBoolean("expanded"), reminderTriggered = b.optBoolean("reminderTriggered"), reminderRule = b.nullString("reminderRule"), reminderBaseAt = b.nullLong("reminderBaseAt"), reminderCustomDays = b.optInt("reminderCustomDays"), createdAt = b.getLong("createdAt"), archived = b.optBoolean("archived"), position = b.optInt("position"), boardType = b.optString("boardType", "LIST"), pinned = b.optBoolean("pinned"), deletedAt = b.nullLong("deletedAt"), timeMode = b.getString("timeMode"), reminderSkipAt = b.nullLong("reminderSkipAt")) }
+            val tasks = if (legacyTodos) emptyList() else array("tasks").map { t -> TodoItem(id = t.getLong("id"), boardId = t.getLong("boardId"), text = t.getString("text"), completed = t.optBoolean("completed"), position = t.optInt("position"), important = t.optBoolean("important"), reminderAt = t.nullLong("reminderAt"), reminderTriggered = t.optBoolean("reminderTriggered"), plannedDay = t.nullLong("plannedDay"), dueAt = t.nullLong("dueAt"), deletedAt = t.nullLong("deletedAt"), reminderRule = t.nullString("reminderRule"), reminderBaseAt = t.nullLong("reminderBaseAt"), reminderCustomDays = t.optInt("reminderCustomDays"), reminderSkipAt = t.nullLong("reminderSkipAt")) }
+            require(boards.all { it.timeMode in setOf("UNIFIED", "INDEPENDENT") }) { "未知待办框类型" }
+            require(boards.map { it.id }.distinct().size == boards.size && tasks.map { it.id }.distinct().size == tasks.size) { "备份包含重复待办" }
             require(tasks.all { task -> boards.any { it.id == task.boardId } }) { "待办清单结构不完整" }
             // A recovery point is written before the replacement transaction.
             val recovery = backup(context, model, ExportOptions())
@@ -264,11 +272,11 @@ object ExportEngine {
             val oldTodos = model.dao.allTodos()
             val recoverDir = File(context.filesDir, "recovery").apply { mkdirs() }
             recovery.file.copyTo(File(recoverDir, recovery.file.name))
-            model.db.withTransaction {
+            model.replaceWorkspace {
                 val old = model.notes.nodes().map { it.id }
                 model.notes.removeVersions(old); model.notes.remove(old)
                 model.dao.clearSchedule(); model.dao.clearTodos()
-                model.notes.putAll(notes); versions.forEach { model.notes.version(it) }
+                model.notes.putAll(MemorySpaces.normalize(notes)); versions.forEach { model.notes.version(it) }
                 model.dao.restoreSchedule(schedules); model.dao.restoreBoards(boards); model.dao.restoreItems(tasks)
             }
             val pref = appPreferences(context).edit().clear()
@@ -279,8 +287,12 @@ object ExportEngine {
             oldSchedules.forEach { ReminderScheduler.cancel(context, it.id) }
             oldTodos.forEach { b -> ReminderScheduler.cancelTodoBoard(context, b.board.id); b.items.forEach { ReminderScheduler.cancelTodo(context, it.id) } }
             schedules.filter { !it.archived && it.deletedAt == null }.forEach { ReminderScheduler.schedule(context, it) }
-            boards.filter { !it.archived && it.deletedAt == null }.forEach { b -> ReminderScheduler.scheduleTodoBoard(context, b); tasks.filter { it.boardId == b.id && !it.completed && it.deletedAt == null }.forEach { ReminderScheduler.scheduleTodo(context, it) } }
-            "已恢复 ${notes.count { it.kind != "folder" }} 条记录。外部引用可能需要重新绑定。恢复前数据已保存在本机恢复备份中。"
+            boards.filter { !it.archived && it.deletedAt == null }.forEach { b ->
+                val active = tasks.filter { it.boardId == b.id && !it.completed && it.deletedAt == null }
+                if (isUnifiedBoard(b)) { if (active.isNotEmpty()) ReminderScheduler.scheduleTodoBoard(context, b) }
+                else active.forEach { ReminderScheduler.scheduleTodo(context, it) }
+            }
+            "已恢复 ${notes.count { it.kind != "folder" }} 条记录。${if (legacyTodos) "旧版待办已按改版规则过滤。" else ""}外部引用可能需要重新绑定。恢复前数据已保存在本机恢复备份中。"
         } finally { stage.deleteRecursively() }
     }
     suspend fun taskExport(context: Context, model: WorkspaceModel, type: String): File = withContext(Dispatchers.IO) {
@@ -294,8 +306,12 @@ object ExportEngine {
             output(context, "时间表", "ics").apply { writeText(lines.joinToString("\r\n") { folded(it) } + "\r\n") }
         } else {
             fun cell(s: String): String { val safe = if (s.startsWith('=') || s.startsWith('+') || s.startsWith('-') || s.startsWith('@')) "'$s" else s; return "\"${safe.replace("\"", "\"\"")}\"" }
-            val lines = mutableListOf("清单,事项,完成,重要,计划日期,截止时间,提醒时间,归档")
-            model.dao.allTodos().filter { it.board.deletedAt == null }.forEach { b -> b.items.filter { it.deletedAt == null }.forEach { t -> lines += listOf(b.board.summary, t.text, if (t.completed) "是" else "否", if (t.important) "是" else "否", t.plannedDay?.let { dateText(it) }.orEmpty(), (t.dueAt ?: b.board.dueDate)?.let { dateText(it, true) }.orEmpty(), t.reminderAt?.let { dateText(it, true) }.orEmpty(), if (b.board.archived) "是" else "否").joinToString(",", transform = ::cell) } }
+            val lines = mutableListOf("清单,事项,完成,重要,截止时间,提醒时间,提醒频次,归档")
+            model.dao.allTodos().filter { it.board.deletedAt == null }.forEach { b -> b.items.filter { it.deletedAt == null }.forEach { t ->
+                val unified = isUnifiedBoard(b.board)
+                val reminder = if (unified) b.board.reminderBaseAt ?: b.board.reminderAt else t.reminderBaseAt ?: t.reminderAt
+                lines += listOf(if (b.board.boardType == "DAILY") t.plannedDay?.let { dateText(it) }.orEmpty() else b.board.summary, t.text, if (t.completed) "是" else "否", if (t.important) "是" else "否", effectiveTaskDeadline(t, b.board)?.let { dateText(it, true) }.orEmpty(), reminder?.let { dateText(it, true) }.orEmpty(), reminderRuleLabel(if (unified) b.board.reminderRule else t.reminderRule, if (unified) b.board.reminderCustomDays else t.reminderCustomDays), if (b.board.archived) "是" else "否").joinToString(",", transform = ::cell)
+            } }
             output(context, "待办", "csv").apply { writeText("\uFEFF" + lines.joinToString("\r\n")) }
         }
     }

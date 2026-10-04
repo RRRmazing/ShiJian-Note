@@ -27,6 +27,8 @@ interface AppDao {
 
     @Insert suspend fun insertSchedule(event: ScheduleEvent): Long
     @Update suspend fun updateSchedule(event: ScheduleEvent)
+    @Query("UPDATE schedule_events SET important = NOT important WHERE id = :id") suspend fun toggleScheduleImportant(id: Long)
+    @Query("UPDATE schedule_events SET deletedAt = :time WHERE id IN (:ids) AND deletedAt IS NULL") suspend fun trashSchedules(ids: List<Long>, time: Long)
     @Delete suspend fun deleteSchedule(event: ScheduleEvent)
     @Query("UPDATE schedule_events SET archived = 1 WHERE id IN (:ids)") suspend fun archiveSchedules(ids: List<Long>)
     @Query("DELETE FROM schedule_events WHERE id IN (:ids)") suspend fun deleteSchedules(ids: List<Long>)
@@ -116,6 +118,9 @@ interface AppDao {
 
     @Query("UPDATE todo_boards SET reminderTriggered = 1 WHERE id = :boardId")
     suspend fun markTodoBoardReminded(boardId: Long)
+
+    @Query("SELECT * FROM todo_items WHERE id = :itemId LIMIT 1")
+    suspend fun getTodoItem(itemId: Long): TodoItem?
 
     @Query("SELECT * FROM todo_boards WHERE id = :boardId LIMIT 1")
     suspend fun getTodoBoard(boardId: Long): TodoBoard?

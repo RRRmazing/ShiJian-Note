@@ -21,6 +21,7 @@ data class NoteNode(
     val mood: String = "",
     val imageDisplay: String = "inherit",
     val imageStorage: String = "inherit",
+    @ColumnInfo(defaultValue = "0") val forceChildren: Boolean = false,
     val deletedAt: Long? = null,
     val deleteGroup: String? = null,
     val createdAt: Long = System.currentTimeMillis(),

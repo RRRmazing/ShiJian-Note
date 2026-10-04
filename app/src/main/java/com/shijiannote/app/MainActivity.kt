@@ -364,10 +364,10 @@ private fun ShiJianNoteApp() {
         }
     }
     if (exportNotice != null) AlertDialog(onDismissRequest = { exportNotice = null }, title = { Text("导出") }, text = { Text(exportNotice!!) }, confirmButton = { Button(onClick = { exportNotice = null }) { Text("知道了") } })
-    if (showQuickTodoCreate) QuickTodoCreateDialog(board = todoToEdit, onDismiss = { showQuickTodoCreate = false; todoToEdit = null }) { title, tasks, dueAt, reminder ->
+    if (showQuickTodoCreate) QuickTodoCreateDialog(board = todoToEdit, onDismiss = { showQuickTodoCreate = false; todoToEdit = null }) { title, tasks, dueAt, reminder, timeMode ->
         val existing = todoToEdit
         val reminderAt = reminder?.let { draft ->
-            if (draft.repeatRule != null) dueAt ?: draft.baseAt else dueAt
+            if (draft.repeatRule != null) draft.baseAt else draft.singleAt ?: draft.baseAt
         }
         if (existing == null) {
             model.addTodo(
@@ -380,7 +380,8 @@ private fun ShiJianNoteApp() {
                 reminderMinutes = reminder?.advanceMinutes ?: 0,
                 reminderRule = reminder?.repeatRule,
                 reminderBaseAt = reminder?.baseAt,
-                reminderCustomDays = reminder?.customDays ?: 0
+                reminderCustomDays = reminder?.customDays ?: 0,
+                timeMode = timeMode
             ) { ReminderScheduler.scheduleTodoBoard(context, it) }
         } else {
             ReminderScheduler.cancelTodoBoard(context, existing.board.id)
@@ -394,7 +395,8 @@ private fun ShiJianNoteApp() {
                 reminderRule = reminder?.repeatRule,
                 reminderBaseAt = reminder?.baseAt,
                 reminderCustomDays = reminder?.customDays ?: 0,
-                reminderTriggered = false
+                reminderTriggered = false,
+                timeMode = timeMode
             )
             model.updateTodo(changed, tasks)
             ReminderScheduler.scheduleTodoBoard(context, changed)
@@ -402,12 +404,12 @@ private fun ShiJianNoteApp() {
         showQuickTodoCreate = false
         todoToEdit = null
     }
-    if (showTodoDialog) TodoReminderDialog(board = todoToEdit, onDismiss = { showTodoDialog = false }, onSave = { summary, due, reminderAt, reminderDays, reminderHours, reminderMinutes, tasks ->
+    if (showTodoDialog) TodoReminderDialog(board = todoToEdit, onDismiss = { showTodoDialog = false }, onSave = { summary, due, reminderAt, reminderDays, reminderHours, reminderMinutes, tasks, timeMode, reminderDraft ->
         val existing = todoToEdit
-        if (existing == null) model.addTodo(summary, due, tasks, reminderAt, reminderDays, reminderHours, reminderMinutes) { ReminderScheduler.scheduleTodoBoard(context, it) }
+        if (existing == null) model.addTodo(summary, due, tasks, reminderAt, reminderDays, reminderHours, reminderMinutes, reminderDraft?.repeatRule, reminderDraft?.baseAt, reminderDraft?.customDays ?: 0, timeMode) { ReminderScheduler.scheduleTodoBoard(context, it) }
         else {
             ReminderScheduler.cancelTodoBoard(context, existing.board.id)
-            val changed = existing.board.copy(summary = summary.trim(), dueDate = due, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderTriggered = false)
+            val changed = existing.board.copy(summary = summary.trim(), dueDate = due, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderTriggered = false, timeMode = timeMode, reminderRule = reminderDraft?.repeatRule, reminderBaseAt = reminderDraft?.baseAt, reminderCustomDays = reminderDraft?.customDays ?: 0)
             model.updateTodo(changed, tasks)
             ReminderScheduler.scheduleTodoBoard(context, changed)
         }
@@ -501,7 +503,7 @@ private fun UsageGuideScreen(onBack: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("使用说明", fontSize = 28.sp, color = Ink) } }
         item { Text("更新时间：2026年9月21日 15时49分29秒", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp)) }
-        item { GuideSection("时笺笔记", "本地优先的时间管理与记录应用。时间表、待办、日记、记忆和设置中的内容均保存在本机 Room 数据库，无需账号或网络连接。") }
+        item { GuideSection("时笺", "本地优先的时间管理与记录应用。时间表、待办、日记、记忆和设置中的内容均保存在本机 Room 数据库，无需账号或网络连接。") }
         item { GuideSection("时间表", "• 新建带日期、可选精确时间、提前提醒和详情的事务，列表按开始时间排序。\n• 点击事务可展开或收起详情；提醒发送后会显示“已提醒”。\n• 开始时间过去后，事务会自动归档至历史。\n• 右上角齿轮菜单可进入历史或查看导出提示。") }
         item { GuideSection("待办", "• 首页提供浅绿色的“今天”和“明天”入口；明天开启时会同时开启今天。\n• 今天/明天中可新建事务、设置具体提醒时间与提前提醒，内容默认单行折叠，点击可展开。\n• 当天事务会自动归档，明天事务会迁移至新的今天；后台任务与下次启动都会补偿检查。\n• 普通待办框可独立展开或收起；“收起”勾选可一次收起或展开全部待办框。\n• 收起的待办框可长按上下排序，新建框默认放在最底部。") }
         item { GuideSection("长按多选与排序", "• 时间表、日记、记忆及历史列表支持长按多选；返回手势会优先取消多选。\n• 今天/明天事务、记忆分类和分类内记忆：长按后松手进入多选；继续按住并上下移动则退出多选、浮起卡片并调整位置。\n• 多选时可全选、取消或删除；拖动期间会隐藏左滑操作层。") }
@@ -527,7 +529,7 @@ private fun SoftwareInfoScreen(onBack: () -> Unit) {
     val githubUrl = "https://github.com/RRRmazing/ShiJian-Note"
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, "返回") }; Text("软件信息", fontSize = 28.sp, color = Ink) } }
-        item { Text("时笺笔记", color = Ink, fontSize = 28.sp, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+        item { Text("时笺", color = Ink, fontSize = 28.sp, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
         item {
             Column(Modifier.fillMaxWidth().padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("版本 ${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 15.sp)

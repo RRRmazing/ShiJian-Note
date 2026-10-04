@@ -43,6 +43,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boolean, reveal: String = "", onBack: () -> Unit, onOpen: (NoteNode) -> Unit, onExport: (Set<String>) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -67,6 +68,13 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     var versions by remember { mutableStateOf(false) }
     var tableOfContents by remember { mutableStateOf(false) }
     var templates by remember { mutableStateOf(false) }
+    var titleFocused by remember(initial.id) { mutableStateOf(false) }
+    var tagDialog by remember { mutableStateOf(false) }
+    var editingTag by remember { mutableStateOf<String?>(null) }
+    var tagInput by rememberSaveable(initial.id) { mutableStateOf("") }
+    var movePicker by remember { mutableStateOf(false) }
+    var preparingMove by remember { mutableStateOf(false) }
+    var stopBeforeMoving by remember { mutableStateOf(false) }
     var importKind by remember { mutableStateOf("image") }
     var rebinding by remember { mutableStateOf<String?>(null) }
     var assetSettings by remember { mutableStateOf<NoteBlock?>(null) }
@@ -115,18 +123,44 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             runCatching {
                 collectRecordings()
                 val latest = decodeNode(org.json.JSONObject(snapshot))
-                val hasContent = latest.title.isNotBlank() || latest.blocks().any { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }
+                val hasContent = latest.title.isNotBlank() || TagRules.names(latest.tags).isNotEmpty() || latest.blocks().any { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }
                 if (hasContent || !initialEditing) { if (changed || initialEditing) model.save(decodeNode(org.json.JSONObject(snapshot))); model.flush(note.id) }
                 else if (nodes.any { it.id == note.id }) {
                     model.flush(note.id)
                     model.notes.remove(listOf(note.id))
                 }
-                keyboard?.hide(); focus.clearFocus(); onBack()
+                withContext(Dispatchers.Main.immediate) { keyboard?.hide(); focus.clearFocus(); onBack() }
             }.onFailure { error = it.message ?: "保存失败，请重试" }
             leaving = false
         }
     }
-    BackHandler { if (addMenu || attachmentMenu) { addMenu = false; attachmentMenu = false } else leave() }
+    suspend fun prepareMove() {
+        collectRecordings()
+        val latest = decodeNode(org.json.JSONObject(snapshot))
+        model.save(latest)
+        model.flush(latest.id)
+        withContext(Dispatchers.Main.immediate) {
+            keyboard?.hide(); focus.clearFocus(); movePicker = true
+        }
+    }
+    fun openMovePicker() {
+        if (preparingMove) return
+        val currentRecording = RecordingService.state.value
+        if (currentRecording.running && currentRecording.owner == note.id) { stopBeforeMoving = true; return }
+        preparingMove = true
+        scope.launch {
+            runCatching { prepareMove() }.onFailure { error = it.message ?: "保存失败，请重试" }
+            preparingMove = false
+        }
+    }
+    val imeVisible = WindowInsets.isImeVisible
+    BackHandler {
+        when {
+            imeVisible -> { keyboard?.hide(); focus.clearFocus() }
+            addMenu || attachmentMenu -> { addMenu = false; attachmentMenu = false }
+            else -> leave()
+        }
+    }
     val latestInsert by rememberUpdatedState<(NoteBlock) -> Unit> { block ->
         val id = rebinding
         if (id == null) insert(block) else {
@@ -182,6 +216,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                     IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "更多") }
                     DropdownMenu(more, { more = false }) {
                         DropdownMenuItem(text = { Text("记录设置") }, onClick = { more = false; settings = true })
+                        if (note.kind == "memory") DropdownMenuItem(text = { Text("移动到") }, enabled = !preparingMove, onClick = { more = false; openMovePicker() })
                         DropdownMenuItem(text = { Text("标题目录") }, onClick = { more = false; tableOfContents = true })
                         DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
                         DropdownMenuItem(text = { Text("导出这一篇") }, onClick = { more = false; scope.launch { model.save(note); model.flush(note.id); onExport(setOf(note.id)) } })
@@ -192,10 +227,28 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item("title") {
-                    if (editing) BasicTextField(note.title, { change(note.copy(title = it)) }, Modifier.fillMaxWidth(), textStyle = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = NoteInk), decorationBox = { inner -> Box { if (note.title.isEmpty()) Text("标题（可选）", fontSize = 26.sp, color = Quiet.copy(alpha = .55f)); inner() } })
-                    else if (note.title.isNotBlank()) Text(note.title, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                    if (editing) BasicTextField(note.title, { change(note.copy(title = it)) }, Modifier.fillMaxWidth().onFocusChanged { titleFocused = it.isFocused }, textStyle = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = NoteInk), decorationBox = { inner -> Box {
+                        if (note.kind == "diary") {
+                            if (note.title.isBlank() && !titleFocused) Text("未命名", fontSize = 26.sp, color = Quiet.copy(alpha = .55f))
+                        } else if (note.title.isEmpty()) Text("标题（可选）", fontSize = 26.sp, color = Quiet.copy(alpha = .55f))
+                        inner()
+                    } })
+                    else if (note.title.isNotBlank() || note.kind == "diary") Text(note.title.ifBlank { "未命名" }, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = if (note.title.isBlank()) Quiet.copy(alpha = .55f) else NoteInk)
                 }
-                item("meta") { Text(listOf(note.tags.takeIf { it.isNotBlank() }, note.mood.takeIf { it.isNotBlank() }).filterNotNull().joinToString(" · "), fontSize = 12.sp, color = Quiet) }
+                item("meta") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TagRules.names(note.tags).forEach { tag ->
+                                EditorTag(tag, if (editing) ({ editingTag = tag; tagInput = tag; tagDialog = true }) else null,
+                                    if (editing) ({ change(note.copy(tags = TagRules.remove(note.tags, tag))) }) else null)
+                            }
+                            if (editing) Surface(onClick = { editingTag = null; tagInput = ""; tagDialog = true }, shape = RoundedCornerShape(8.dp), color = Color(0xFF293445)) {
+                                Text("＋ 添加标签", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = Color(0xFFF1F5FA), fontSize = 12.sp)
+                            }
+                        }
+                        if (note.mood.isNotBlank()) Text(note.mood, fontSize = 12.sp, color = Quiet)
+                    }
+                }
                 items(shown, key = { it.id }) { block ->
                     if (block.type in setOf("image", "audio", "file", "link")) {
                         MediaBlockCard(block, note, nodes, editing, onView = { viewing = block.id }, onOpen = { target -> onOpen(target) }, onOptions = { assetSettings = block }, onError = { error = it })
@@ -266,7 +319,57 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     picker?.let { kind -> NodePicker("选择${if (kind == "diary") "日记" else "记忆"}", nodes.filter { it.deletedAt == null && it.kind == kind && it.id != note.id }, nodes, { picker = null }) {
         insert(NoteBlock(type = "link", text = it.displayTitle(), target = it.id)); picker = null
     } }
-    if (settings) NoteSettingsDialog(note, nodes, { settings = false }) { change(it) }
+    if (tagDialog) SoftDialog(if (editingTag == null) "添加标签" else "编辑标签", { tagDialog = false }) {
+        OutlinedTextField(tagInput, { tagInput = it }, label = { Text("标签") }, prefix = { Text("#") }, placeholder = { Text("输入标签名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        val names = TagRules.names(tagInput)
+        Button(onClick = {
+            val tags = editingTag?.let { TagRules.replace(note.tags, it, tagInput) } ?: TagRules.add(note.tags, tagInput)
+            if (tags != note.tags) change(note.copy(tags = tags))
+            tagDialog = false
+        }, enabled = names.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text(if (editingTag == null) "添加" else "完成") }
+        val candidates = nodes.filter { it.deletedAt == null && it.kind in setOf("diary", "memory") }
+            .flatMap { TagRules.names(it.tags) }.distinct()
+            .filter { it !in TagRules.names(note.tags) && (tagInput.isBlank() || it.contains(tagInput.trim().trimStart('#'), true)) }
+        if (candidates.isNotEmpty()) {
+            Text("已有标签", fontSize = 12.sp, color = Quiet)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                candidates.forEach { tag -> EditorTag(tag, {
+                    val tags = editingTag?.let { TagRules.replace(note.tags, it, tag) } ?: TagRules.add(note.tags, tag)
+                    change(note.copy(tags = tags)); tagDialog = false
+                }) }
+            }
+        }
+    }
+    if (movePicker) MoveDestinationPicker(model, setOf(note.id), { movePicker = false }, onMoved = { saved ->
+        if (saved != null) {
+            snapshot = jsonObject(saved).toString()
+            undo.clear(); redo.clear(); changed = false
+            selections.clear(); compositions.clear()
+            active = saved.blocks().first().id
+        } else error = "记录已不可用，请返回后重试"
+    })
+    if (preparingMove) SoftDialog("正在保存", {}) { CircularProgressIndicator(); Text("保存后选择移动位置") }
+    if (stopBeforeMoving) SoftDialog("录音尚未结束", { stopBeforeMoving = false }) {
+        Text("结束录音并保存后移动？")
+        Button(onClick = { stopBeforeMoving = false; scope.launch {
+            preparingMove = true
+            runCatching {
+                RecordingService.command(context, "stop")
+                withTimeout(30_000) { while (RecordingService.state.value.running) delay(100) }
+                prepareMove()
+            }.onFailure { error = it.message ?: "录音保存失败，请重试" }
+            preparingMove = false
+        } }) { Text("结束并保存") }
+        TextButton(onClick = { stopBeforeMoving = false }) { Text("继续录制") }
+    }
+    if (settings) NoteSettingsDialog(note, nodes, { settings = false }) { updated ->
+        // Flush editor content first; reconcile on the model and bring the copied blocks back.
+        model.save(note)
+        model.updateImageSettings(updated) { saved ->
+            if (saved.document != note.document) { undo.clear(); redo.clear() }
+            change(saved, false)
+        }
+    }
     if (versions) VersionsDialog(note, model, { versions = false }) { restored ->
         change(restored.copy(id = note.id, kind = note.kind, parentId = note.parentId, day = note.day, deletedAt = null, deleteGroup = null)); versions = false
     }
@@ -285,13 +388,16 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         var display by remember(block.id) { mutableStateOf(block.display) }
         SoftDialog("素材设置", { assetSettings = null }) {
             OutlinedTextField(name, { name = it }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
-            if (block.type == "image") ChoiceRow("显示方式", display, listOf("inherit" to "跟随记录", "preview" to "正文预览", "card" to "图片卡片")) { display = it }
+            val enforced = TreeRules.forcedBy(note, nodes)
+            if (block.type == "image") ChoiceRow("显示方式", if (enforced != null) "inherit" else display, listOf("inherit" to "跟随记录", "preview" to "正文预览", "card" to "图片卡片")) {
+                if (enforced != null) error = "请先前往路径“${TreeRules.path(enforced, nodes)}”解除强制下级设置。" else display = it
+            }
             Text(if (block.type == "link") "引用整篇记录，移除卡片不会删除原记录。" else if (block.owned) "素材保存在时笺中" else "仅引用原文件，移动或删除原文件后可能无法打开。", fontSize = 12.sp, color = Quiet)
             Button(onClick = { updateBlock(block.copy(text = name.ifBlank { block.text }, display = display)); assetSettings = null }, modifier = Modifier.fillMaxWidth()) { Text("完成") }
             if (block.type == "image" || block.type == "file") {
                 OutlinedButton(onClick = { importKind = block.type; rebinding = block.id; assetSettings = null; filePicker.launch(arrayOf(if (block.type == "image") "image/*" else "*/*")) }) { Text("重新选择原文件") }
                 if (block.type == "image" && !block.owned) TextButton(onClick = { scope.launch {
-                    runCatching { importMedia(context, Uri.parse(block.uri), true, true) }.onSuccess { updateBlock(it.copy(id = block.id, text = name, display = display)); assetSettings = null }.onFailure { error = it.message.orEmpty() }
+                    runCatching { copyImage(context, block) }.onSuccess { updateBlock(it.copy(text = name, display = display)); assetSettings = null }.onFailure { error = it.message.orEmpty() }
                 } }) { Text("保存图片副本到时笺") }
             }
             TextButton(onClick = { val next = blocks.filter { it.id != block.id }.ifEmpty { listOf(NoteBlock()) }; change(note.copy(document = encodeBlocks(next), text = blockPlainText(next))); assetSettings = null }) { Text("移除此素材", color = MaterialTheme.colorScheme.error) }
@@ -304,6 +410,16 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         TextButton(onClick = { stopBeforeLeaving = false }) { Text("继续录制") }
     }
     if (error.isNotBlank()) SoftDialog("提示", { error = "" }) { Text(error); TextButton(onClick = { error = "" }) { Text("知道了") } }
+}
+
+@Composable
+private fun EditorTag(tag: String, onEdit: (() -> Unit)? = null, onRemove: (() -> Unit)? = null) {
+    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF293445)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("#$tag", modifier = Modifier.then(if (onEdit != null) Modifier.clickable(onClick = onEdit) else Modifier).padding(start = 10.dp, end = if (onRemove == null) 10.dp else 2.dp, top = 6.dp, bottom = 6.dp), color = Color(0xFFF1F5FA), fontSize = 12.sp)
+            if (onRemove != null) IconButton(onClick = onRemove, modifier = Modifier.size(26.dp)) { Icon(Icons.Default.Close, "从当前记录移除标签 $tag", Modifier.size(13.dp), tint = Color(0xFFD7E0EB)) }
+        }
+    }
 }
 
 fun highlightText(text: String, query: String): AnnotatedString = buildAnnotatedString {
@@ -320,7 +436,7 @@ fun highlightText(text: String, query: String): AnnotatedString = buildAnnotated
         return
     }
     val context = LocalContext.current
-    val display = block.display.takeUnless { it == "inherit" } ?: TreeRules.imagePreference(note, nodes, false, imageDisplayDefault(context))
+    val display = TreeRules.imageDisplay(block, note, nodes, imageDisplayDefault(context))
     val target = nodes.find { it.id == block.target }
     SoftCard(color = if (block.type == "audio") Mint else Color(0xFFF0F3F9)) {
         if (block.type == "image" && display == "preview") {

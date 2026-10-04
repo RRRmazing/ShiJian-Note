@@ -19,7 +19,6 @@ import com.shijiannote.app.data.TodoItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.Calendar
 
 object ReminderScheduler {
     private const val CHANNEL_ID = "schedule_reminders"
@@ -37,7 +36,7 @@ object ReminderScheduler {
     const val RULE_CUSTOM_DAYS = "CUSTOM_DAYS"
 
     fun schedule(context: Context, event: ScheduleEvent) {
-        if (!event.reminderEnabled || event.archived || event.deletedAt != null) return
+        if (!event.reminderEnabled || event.archived || event.deletedAt != null || event.reminderTriggered) return
         val remindAt = event.eventAt - event.reminderDays * 86_400_000L - event.reminderHours * 3_600_000L - event.reminderMinutes * 60_000L
         if (remindAt <= System.currentTimeMillis()) return
         requestNotificationPermission(context)
@@ -46,98 +45,75 @@ object ReminderScheduler {
             .putExtra(ReminderReceiver.NOTE, event.note)
             .putExtra(ReminderReceiver.ID, event.id)
             .putExtra(ReminderReceiver.TYPE, ReminderReceiver.SCHEDULE)
+            .putExtra(ReminderReceiver.AT, remindAt)
         scheduleAlarm(context, event.id.toInt(), intent, remindAt)
     }
 
     fun scheduleTodo(context: Context, item: TodoItem) {
-        if (item.completed || item.deletedAt != null) return
-        val taskTime = item.reminderAt ?: return
-        val remindAt = taskTime - item.reminderHours * 3_600_000L - item.reminderMinutes * 60_000L
-        if (remindAt <= System.currentTimeMillis()) return
+        CoroutineScope(Dispatchers.IO).launch { rescheduleTodo(context, item.id) }
+    }
+
+    suspend fun rescheduleTodo(context: Context, itemId: Long, afterTime: Long = System.currentTimeMillis()) {
+        val dao = AppDatabase.get(context).appDao()
+        cancelTodo(context, itemId)
+        val item = dao.getTodoItem(itemId) ?: return
+        val board = dao.getTodoBoard(item.boardId) ?: return
+        if (isUnifiedBoard(board)) rescheduleTodoBoard(context, board.id, afterTime)
+        else scheduleTaskAlarm(context, item, board, afterTime)
+    }
+
+    private fun scheduleTaskAlarm(context: Context, item: TodoItem, board: TodoBoard, afterTime: Long = System.currentTimeMillis()) {
+        if (isUnifiedBoard(board)) return
+        val remindAt = nextTaskReminderAt(item, board, afterTime) ?: return
         requestNotificationPermission(context)
         val intent = Intent(context, ReminderReceiver::class.java)
-            .putExtra(ReminderReceiver.TITLE, item.text.lineSequence().firstOrNull().orEmpty())
-            .putExtra(ReminderReceiver.NOTE, "待办提醒")
             .putExtra(ReminderReceiver.ID, item.id)
             .putExtra(ReminderReceiver.TYPE, ReminderReceiver.TODO)
+            .putExtra(ReminderReceiver.AT, remindAt)
         scheduleAlarm(context, TODO_OFFSET + item.id.toInt(), intent, remindAt)
     }
 
-    /** Schedules one alarm. For repeats, the receiver schedules the next occurrence after it fires. */
     fun scheduleTodoBoard(context: Context, board: TodoBoard, afterTime: Long = System.currentTimeMillis()) {
+        cancelTodoBoard(context, board.id)
+        CoroutineScope(Dispatchers.IO).launch { rescheduleTodoBoard(context, board.id, afterTime) }
+    }
+
+    /** Always read current rows, including completion and trash state, before scheduling. */
+    suspend fun rescheduleTodoBoard(context: Context, boardId: Long, afterTime: Long = System.currentTimeMillis()) {
+        val dao = AppDatabase.get(context).appDao()
+        val board = dao.getTodoBoard(boardId) ?: return
+        val items = dao.getTodoItems(boardId)
+        cancelTodoBoard(context, boardId)
+        items.forEach { cancelTodo(context, it.id) }
         if (board.archived || board.deletedAt != null) return
-        if (board.reminderAt == null) return
-        val deadlineTime = board.dueDate
-        val remindAt = if (board.reminderRule == null) {
-            val deadline = deadlineTime ?: return
-            deadline - board.reminderDays * 86_400_000L - board.reminderHours * 3_600_000L - board.reminderMinutes * 60_000L
-        } else {
-            nextRepeatAt(board, afterTime) ?: return
-        }
-        if (remindAt <= afterTime || (board.reminderRule != null && deadlineTime?.let { remindAt >= it } == true)) return
-        requestNotificationPermission(context)
-        val note = if (board.reminderRule == null) "待办框截止提醒" else "待办框重复提醒"
-        val intent = Intent(context, ReminderReceiver::class.java)
-            .putExtra(ReminderReceiver.TITLE, board.summary)
-            .putExtra(ReminderReceiver.NOTE, note)
-            .putExtra(ReminderReceiver.ID, board.id)
-            .putExtra(ReminderReceiver.TYPE, ReminderReceiver.TODO_BOARD)
-        scheduleAlarm(context, TODO_BOARD_OFFSET + board.id.toInt(), intent, remindAt)
-    }
-
-    private fun nextRepeatAt(board: TodoBoard, afterTime: Long): Long? {
-        val baseTime = board.reminderBaseAt ?: return null
-        val deadlineTime = board.dueDate
-        val rule = board.reminderRule ?: return null
-        val calendar = Calendar.getInstance().apply { timeInMillis = baseTime }
-        var guard = 0
-        when (rule) {
-            RULE_WEEKDAYS, RULE_WEEKENDS -> {
-                while (calendar.timeInMillis <= afterTime || !matchesDayType(calendar, rule)) {
-                    calendar.add(Calendar.DATE, 1)
-                    if (++guard > 10_000) return null
-                }
-            }
-            else -> {
-                while (calendar.timeInMillis <= afterTime) {
-                    when (rule) {
-                        RULE_DAILY -> calendar.add(Calendar.DATE, 1)
-                        RULE_EVERY_3_DAYS -> calendar.add(Calendar.DATE, 3)
-                        RULE_WEEKLY -> calendar.add(Calendar.DATE, 7)
-                        RULE_SEMI_MONTHLY -> calendar.add(Calendar.DATE, 15)
-                        RULE_MONTHLY -> calendar.add(Calendar.MONTH, 1)
-                        RULE_YEARLY -> calendar.add(Calendar.YEAR, 1)
-                        RULE_CUSTOM_DAYS -> calendar.add(Calendar.DATE, board.reminderCustomDays.coerceAtLeast(1))
-                        else -> return null
-                    }
-                    if (++guard > 10_000) return null
-                }
-            }
-        }
-        return calendar.timeInMillis.takeIf { deadlineTime == null || it < deadlineTime }
-    }
-
-    private fun matchesDayType(calendar: Calendar, rule: String): Boolean {
-        val day = calendar.get(Calendar.DAY_OF_WEEK)
-        return if (rule == RULE_WEEKDAYS) day in Calendar.MONDAY..Calendar.FRIDAY else day == Calendar.SATURDAY || day == Calendar.SUNDAY
+        if (isUnifiedBoard(board)) {
+            if (items.none { !it.completed && it.deletedAt == null }) return
+            val remindAt = nextBoardReminderAt(board, afterTime) ?: return
+            requestNotificationPermission(context)
+            val intent = Intent(context, ReminderReceiver::class.java)
+                .putExtra(ReminderReceiver.ID, board.id)
+                .putExtra(ReminderReceiver.TYPE, ReminderReceiver.TODO_BOARD)
+                .putExtra(ReminderReceiver.AT, remindAt)
+            scheduleAlarm(context, TODO_BOARD_OFFSET + board.id.toInt(), intent, remindAt)
+        } else items.forEach { scheduleTaskAlarm(context, it, board, afterTime) }
     }
 
     fun cancelTodoBoard(context: Context, boardId: Long) {
         val intent = Intent(context, ReminderReceiver::class.java)
         val pending = PendingIntent.getBroadcast(context, TODO_BOARD_OFFSET + boardId.toInt(), intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
-        if (pending != null) context.getSystemService(AlarmManager::class.java).cancel(pending)
+        if (pending != null) { context.getSystemService(AlarmManager::class.java).cancel(pending); pending.cancel() }
     }
 
     fun cancelTodo(context: Context, itemId: Long) {
         val intent = Intent(context, ReminderReceiver::class.java)
         val pending = PendingIntent.getBroadcast(context, TODO_OFFSET + itemId.toInt(), intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
-        if (pending != null) context.getSystemService(AlarmManager::class.java).cancel(pending)
+        if (pending != null) { context.getSystemService(AlarmManager::class.java).cancel(pending); pending.cancel() }
     }
 
     fun cancel(context: Context, eventId: Long) {
         val intent = Intent(context, ReminderReceiver::class.java)
         val pending = PendingIntent.getBroadcast(context, eventId.toInt(), intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
-        if (pending != null) context.getSystemService(AlarmManager::class.java).cancel(pending)
+        if (pending != null) { context.getSystemService(AlarmManager::class.java).cancel(pending); pending.cancel() }
     }
 
     private fun scheduleAlarm(context: Context, requestCode: Int, intent: Intent, at: Long) {
@@ -172,34 +148,50 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getLongExtra(ID, 0)
         val type = intent.getStringExtra(TYPE) ?: SCHEDULE
-        val notificationId = when (type) {
-            TODO -> 1_000_000 + id
-            TODO_BOARD -> 2_000_000 + id
-            else -> id
-        }
+        val alarmAt = intent.getLongExtra(AT, Long.MIN_VALUE)
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val dao = AppDatabase.get(context).appDao()
-                val valid = when (type) {
-                    TODO -> dao.allTodos().any { b -> !b.board.archived && b.board.deletedAt == null && b.items.any { it.id == id && !it.completed && it.deletedAt == null } }
-                    TODO_BOARD -> dao.getTodoBoard(id)?.let { !it.archived && it.deletedAt == null } == true
-                    else -> dao.allSchedule().any { it.id == id && !it.archived && it.deletedAt == null && it.reminderEnabled }
-                }
-                if (!valid) return@launch
-                ReminderScheduler.show(context, intent.getStringExtra(TITLE).orEmpty(), intent.getStringExtra(NOTE).orEmpty(), notificationId)
+                val now = System.currentTimeMillis()
                 when (type) {
-                    TODO -> dao.markTodoReminded(id)
-                    TODO_BOARD -> {
-                        val board = dao.getTodoBoard(id)
-                        if (board?.reminderRule == null) dao.markTodoBoardReminded(id)
-                        else ReminderScheduler.scheduleTodoBoard(context, board, System.currentTimeMillis())
+                    TODO -> {
+                        val item = dao.getTodoItem(id) ?: return@launch
+                        val board = dao.getTodoBoard(item.boardId) ?: return@launch
+                        val deadline = effectiveTaskDeadline(item, board)
+                        val valid = alarmAt != Long.MIN_VALUE && alarmAt <= now && !isUnifiedBoard(board) &&
+                            (deadline == null || deadline >= now) && nextTaskReminderAt(item, board, alarmAt - 1) == alarmAt
+                        if (valid) {
+                            ReminderScheduler.show(context, item.text.lineSequence().firstOrNull().orEmpty(), "待办提醒", 1_000_000 + id)
+                            if (item.reminderRule == null) dao.markTodoReminded(id)
+                            else if (item.reminderSkipAt?.let { it <= now } == true) dao.updateTodoItem(item.copy(reminderSkipAt = null))
+                        }
+                        ReminderScheduler.rescheduleTodo(context, item.id, now)
                     }
-                    SCHEDULE -> dao.markScheduleReminded(id)
+                    TODO_BOARD -> {
+                        val board = dao.getTodoBoard(id) ?: return@launch
+                        val items = dao.getTodoItems(id)
+                        val valid = alarmAt != Long.MIN_VALUE && alarmAt <= now &&
+                            (board.dueDate == null || board.dueDate >= now) &&
+                            items.any { !it.completed && it.deletedAt == null } && nextBoardReminderAt(board, alarmAt - 1) == alarmAt
+                        if (valid) {
+                            ReminderScheduler.show(context, board.summary, "待办框提醒", 2_000_000 + id)
+                            if (board.reminderRule == null) dao.markTodoBoardReminded(id)
+                            else if (board.reminderSkipAt?.let { it <= now } == true) dao.updateTodoBoard(board.copy(reminderSkipAt = null))
+                        }
+                        ReminderScheduler.rescheduleTodoBoard(context, board.id, now)
+                    }
+                    SCHEDULE -> {
+                        val event = dao.allSchedule().firstOrNull { it.id == id } ?: return@launch
+                        val expected = event.eventAt - event.reminderDays * 86_400_000L - event.reminderHours * 3_600_000L - event.reminderMinutes * 60_000L
+                        if (!event.archived && event.deletedAt == null && event.reminderEnabled && !event.reminderTriggered &&
+                            expected <= now && (alarmAt == Long.MIN_VALUE || alarmAt == expected)) {
+                            ReminderScheduler.show(context, event.title, event.note, id)
+                            dao.markScheduleReminded(id)
+                        }
+                    }
                 }
-            } finally {
-                pendingResult.finish()
-            }
+            } finally { pendingResult.finish() }
         }
     }
 
@@ -208,6 +200,7 @@ class ReminderReceiver : BroadcastReceiver() {
         const val NOTE = "note"
         const val ID = "id"
         const val TYPE = "type"
+        const val AT = "at"
         const val SCHEDULE = "schedule"
         const val TODO = "todo"
         const val TODO_BOARD = "todo_board"
@@ -221,10 +214,7 @@ class ReminderBootReceiver : BroadcastReceiver() {
             try {
                 val dao = AppDatabase.get(context).appDao()
                 dao.allSchedule().filter { !it.archived && it.deletedAt == null }.forEach { ReminderScheduler.schedule(context, it) }
-                dao.allTodos().filter { !it.board.archived && it.board.deletedAt == null }.forEach { b ->
-                    ReminderScheduler.scheduleTodoBoard(context, b.board)
-                    b.items.filter { !it.completed && it.deletedAt == null }.forEach { ReminderScheduler.scheduleTodo(context, it) }
-                }
+                dao.allTodos().forEach { ReminderScheduler.rescheduleTodoBoard(context, it.board.id) }
             } finally { result.finish() }
         }
     }

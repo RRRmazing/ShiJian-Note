@@ -44,10 +44,12 @@ fun decodeNode(j: JSONObject): NoteNode = NoteNode(
     title = j.optString("title"), text = j.optString("text"), document = j.optString("document"), day = j.nullLong("day"),
     position = j.optInt("position"), pinned = j.optBoolean("pinned"), favorite = j.optBoolean("favorite"), tags = j.optString("tags"), mood = j.optString("mood"),
     imageDisplay = j.optString("imageDisplay", "inherit"), imageStorage = j.optString("imageStorage", "inherit"),
+    forceChildren = j.optBoolean("forceChildren"),
     deletedAt = j.nullLong("deletedAt"), deleteGroup = j.nullString("deleteGroup"), createdAt = j.getLong("createdAt"), updatedAt = j.getLong("updatedAt")
 )
 fun NoteNode.blocks(): List<NoteBlock> = decodeBlocks(document, text)
-fun NoteNode.displayTitle(): String = title.ifBlank { text.lineSequence().firstOrNull { it.isNotBlank() }?.take(80) ?: if (kind == "diary") "今日记录" else "未命名记忆" }
+fun NoteNode.displayTitle(): String = title.takeIf { it.isNotBlank() } ?: if (kind == "diary") "未命名" else
+    text.lineSequence().firstOrNull { it.isNotBlank() }?.take(80) ?: if (kind == "folder") "未命名分类" else "未命名记忆"
 fun blockPlainText(blocks: List<NoteBlock>): String = blocks.joinToString("\n") { it.text }
 fun visibleBlockIds(blocks: List<NoteBlock>, reveal: Boolean): Set<String> {
     val result = mutableSetOf<String>()

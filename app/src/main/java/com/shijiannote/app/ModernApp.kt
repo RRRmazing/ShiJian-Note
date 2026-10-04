@@ -27,10 +27,24 @@ import org.json.JSONObject
     val context = LocalContext.current
     val model: WorkspaceModel = viewModel(factory = androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.getInstance(context.applicationContext as Application))
     val nodes by model.nodes.collectAsState()
+    val spacesReady by model.spacesReady.collectAsState()
+    val startupError by model.startupError.collectAsState()
+    if (!spacesReady) {
+        YouthTheme {
+            Surface(Modifier.fillMaxSize(), color = Mist) {
+                Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (startupError == null) { CircularProgressIndicator(); Spacer(Modifier.height(16.dp)); Text("正在整理本机记录…") }
+                    else { Text(startupError!!); Button(onClick = { model.retry() }) { Text("重试") } }
+                }
+            }
+        }
+        return
+    }
     val schedules by model.schedules.collectAsState()
     val todos by model.todos.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var parent by rememberSaveable { mutableStateOf<String?>(null) }
+    var memoryVisit by rememberSaveable { mutableIntStateOf(0) }
     var editorSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var editingNew by rememberSaveable { mutableStateOf(false) }
     var reveal by remember { mutableStateOf("") }
@@ -44,7 +58,24 @@ import org.json.JSONObject
     var scheduleDialog by remember { mutableStateOf(false) }
     var todoDialog by remember { mutableStateOf(false) }
     var todoEdit by remember { mutableStateOf<TodoBoardWithItems?>(null) }
-    var search by remember { mutableStateOf(false) }
+    var todoTaskEdit by remember { mutableStateOf<TodoItem?>(null) }
+    var todoView by rememberSaveable { mutableStateOf("lists") }
+    var todoDay by rememberSaveable { mutableStateOf<Long?>(null) }
+    var search by rememberSaveable { mutableStateOf(false) }
+    var searchTab by rememberSaveable { mutableIntStateOf(0) }
+    var searchFolder by rememberSaveable { mutableStateOf(false) }
+    var searchFolderParent by rememberSaveable { mutableStateOf<String?>(null) }
+    var structure by rememberSaveable { mutableStateOf(false) }
+    var structureRoot by rememberSaveable { mutableStateOf<String?>(null) }
+    var structureFolder by rememberSaveable { mutableStateOf(false) }
+    var structureEntry by rememberSaveable { mutableStateOf<String?>(null) }
+    var structureFolderParent by rememberSaveable { mutableStateOf<String?>(null) }
+    var structureSearchSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var structureHistory by rememberSaveable { mutableStateOf("[]") }
+    var treeReturnChoice by rememberSaveable { mutableStateOf(false) }
+    var failurePage by rememberSaveable { mutableStateOf(false) }
+    val imageBusy by model.imageBusy.collectAsState()
+    val imageFailures by model.imageFailures.collectAsState()
     var general by rememberSaveable { mutableStateOf(false) }
     var trash by rememberSaveable { mutableStateOf(false) }
     var advanced by rememberSaveable { mutableStateOf(false) }
@@ -65,6 +96,54 @@ import org.json.JSONObject
         editorSnapshot = jsonObject(note).toString(); editingNew = new; reveal = query; selecting = false
     }
     fun export(ids: Set<String>) { if (ids.isNotEmpty()) exportIds = ids else scope.launch { snackbar.showSnackbar("没有可导出的内容") } }
+    fun startSearch() { searchTab = tab; searchFolder = false; search = true; addMemory = false }
+    fun showStructure(root: String?) {
+        val history = if (structure && (structureFolder || structureSearchSnapshot != null)) org.json.JSONArray(structureHistory).put(JSONObject()
+            .put("root", structureRoot).put("entry", structureEntry).put("parent", structureFolderParent).put("folder", structureFolder)
+            .put("search", search).put("searchFolder", searchFolder).put("searchParent", searchFolderParent)
+            .put("searchTab", searchTab).put("searchSnapshot", structureSearchSnapshot)) else org.json.JSONArray()
+        structureHistory = history.toString()
+        structureRoot = root; structureFolder = false; structureEntry = null; structureSearchSnapshot = null; structure = true
+    }
+    fun closeStructure() {
+        val history = org.json.JSONArray(structureHistory)
+        if (history.length() == 0) { structure = false; structureEntry = null } else {
+            val previous = history.getJSONObject(history.length() - 1)
+            history.remove(history.length() - 1); structureHistory = history.toString()
+            structureRoot = previous.optString("root").takeIf { it.isNotBlank() }
+            structureEntry = previous.optString("entry").takeIf { it.isNotBlank() }
+            structureFolderParent = previous.optString("parent").takeIf { it.isNotBlank() }
+            structureFolder = previous.optBoolean("folder")
+            search = previous.optBoolean("search"); searchFolder = previous.optBoolean("searchFolder")
+            searchFolderParent = previous.optString("searchParent").takeIf { it.isNotBlank() }; searchTab = previous.optInt("searchTab")
+            structureSearchSnapshot = previous.optString("searchSnapshot").takeIf { it.isNotBlank() }
+        }
+    }
+    fun searchFromStructure() {
+        structureSearchSnapshot = JSONObject().put("search", search).put("folder", searchFolder).put("parent", searchFolderParent).put("tab", searchTab).toString()
+        startSearch(); searchTab = 3
+    }
+    fun closeSearch() {
+        val previous = structureSearchSnapshot?.let { JSONObject(it) }
+        if (previous != null) {
+            search = previous.optBoolean("search"); searchFolder = previous.optBoolean("folder")
+            searchFolderParent = previous.optString("parent").takeIf { it.isNotBlank() }; searchTab = previous.optInt("tab")
+            structureSearchSnapshot = null
+        } else { search = false; searchFolder = false }
+    }
+    fun detachTree(destination: String?) {
+        parent = destination
+        editorSnapshot = null; editorStack.clear(); reveal = ""; tab = 3; memoryVisit++
+        structure = false; structureFolder = false; structureEntry = null; structureSearchSnapshot = null; structureHistory = "[]"
+        search = false; searchFolder = false; treeReturnChoice = false; selecting = false
+    }
+    fun leaveTreeForParent() {
+        val entry = nodes.find { it.id == structureEntry }
+        val destination = entry?.parentId?.takeIf { id -> nodes.any { it.id == id && it.deletedAt == null } }
+            ?: if (entry != null && !MemorySpaces.isRoot(entry.id)) MemorySpaces.rootId(entry, nodes) else null
+        detachTree(destination)
+    }
+    LaunchedEffect(imageFailures) { failurePage = imageFailures.isNotEmpty() }
     LaunchedEffect(Unit) {
         model.messages.collect { snackbar.showSnackbar(it) }
     }
@@ -86,22 +165,55 @@ import org.json.JSONObject
     }
     YouthTheme {
         Scaffold(containerColor = Mist, snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
-            if (editor == null && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
+            if (editor == null && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 val labels = listOf("时间表", "待办", "日记", "记忆", "设置")
                 val icons = listOf(Icons.Default.CalendarMonth, Icons.Default.CheckCircleOutline, Icons.Default.MenuBook, Icons.Default.FolderOpen, Icons.Default.Settings)
                 val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
-                labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index, onClick = { tab = index; selecting = false; addMemory = false }, icon = { Icon(icons[index], label) }, label = { Text(if (compact && index == 0) "日程" else label, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }) }
+                labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index, onClick = { if (index == 3 || tab == 3) { parent = null; memoryVisit++ }; tab = index; selecting = false; addMemory = false }, icon = { Icon(icons[index], label) }, label = { Text(if (compact && index == 0) "日程" else label, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }) }
             }
         }) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 if (editor != null) RichNoteEditor(editor, model, editingNew, reveal,
                     onBack = {
-                        if (editorStack.isEmpty()) { editorSnapshot = null; reveal = "" }
+                        if (editorStack.isEmpty()) {
+                            if (structure && structureSearchSnapshot == null && editor.id == structureEntry) treeReturnChoice = true
+                            else { editorSnapshot = null; reveal = "" }
+                        }
                         else { val id = editorStack.removeAt(editorStack.lastIndex); scope.launch { model.notes.node(id)?.let { open(it) } ?: run { editorSnapshot = null } } }
                     },
                     onOpen = { target -> scope.launch { runCatching { model.flush(editor.id); editorStack.add(editor.id); open(target) }.onFailure { snackbar.showSnackbar("请先保存当前记录") } } }, onExport = ::export)
                 else when {
-                    general -> GeneralSettings({ general = false })
+                    failurePage -> ImageFailuresScreen(model, { failurePage = false }, { open(it, true) })
+                    structure && structureSearchSnapshot == null && structureFolder -> libraryState.SaveableStateProvider("structure-folder-$structureRoot-$structureFolderParent") {
+                        MemoryLibrary(model, structureFolderParent, { destination ->
+                            if (structureEntry != null && destination in TreeRules.descendants(structureEntry!!, nodes)) structureFolderParent = destination
+                            else detachTree(destination)
+                        }, { editorStack.clear(); open(it) }, ::export,
+                            ::searchFromStructure, { selecting = it }, { deleting = it }, { showStructure(structureFolderParent) },
+                            if (structureFolderParent == structureEntry || nodes.none { it.id == structureFolderParent && it.deletedAt == null }) ({ treeReturnChoice = true }) else null)
+                    }
+                    structure && structureSearchSnapshot == null -> libraryState.SaveableStateProvider("structure-$structureRoot") {
+                        StructureTreeScreen(nodes, structureRoot, ::closeStructure, highlightId = structureEntry) { node ->
+                            structureEntry = node.id
+                            if (node.kind == "folder") { structureEntry = node.id; structureFolderParent = node.id; structureFolder = true }
+                            else { editorStack.clear(); open(node) }
+                        }
+                    }
+                    search && searchFolder -> libraryState.SaveableStateProvider("search-folder-$searchFolderParent") {
+                        MemoryLibrary(model, searchFolderParent, { searchFolderParent = it }, { open(it) }, ::export, { searchFolder = false }, { selecting = it }, { deleting = it }, { showStructure(searchFolderParent) }, { searchFolder = false })
+                    }
+                    search -> libraryState.SaveableStateProvider("search-$searchTab") {
+                        GlobalSearch(model, searchTab, ::closeSearch,
+                            { n, query -> editorStack.clear(); open(n, false, query) },
+                            { folder -> searchFolderParent = folder.id; searchFolder = true },
+                            { event -> scheduleEdit = event; scheduleDialog = true },
+                            { board ->
+                                todoDay = null; todoEdit = board
+                                todoTaskEdit = board.items.firstOrNull().takeIf { board.board.boardType == "DAILY" }
+                                todoDialog = todoTaskEdit != null || board.board.boardType != "DAILY"
+                            })
+                    }
+                    general -> GeneralSettings(model, { general = false })
                     trash -> TrashScreen(model, { trash = false })
                     importDestination != null -> ImportTransactionsScreen(importDestination!!, importTitle, null, { importDestination = null },
                         { events -> events.forEach { model.schedule(it) } },
@@ -111,10 +223,13 @@ import org.json.JSONObject
                     about -> ModernAbout({ about = false })
                     tab < 4 -> libraryState.SaveableStateProvider("library-$tab") {
                         when (tab) {
-                            0 -> ScheduleLibrary(model, { event -> scheduleEdit = event; scheduleDialog = true }, { search = true }, { exportTasks = "schedule" }, { selecting = it })
-                            1 -> TodoLibrary(model, { board -> todoEdit = board; todoDialog = true }, { search = true }, { exportTasks = "todo" }, { selecting = it })
-                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, { search = true }, ::export, { deleting = it }, { selecting = it })
-                            else -> MemoryLibrary(model, parent, { parent = it }, { open(it) }, ::export, { search = true }, { selecting = it }, { deleting = it })
+                            0 -> ScheduleLibrary(model, { event -> scheduleEdit = event; scheduleDialog = true }, ::startSearch, { exportTasks = "schedule" }, { selecting = it })
+                            1 -> TodoLibrary(model, { board -> todoDay = null; todoTaskEdit = null; todoEdit = board; todoDialog = true }, ::startSearch, { exportTasks = "todo" }, { selecting = it }, { todoView = it })
+                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, ::startSearch, ::export, { deleting = it }, { selecting = it })
+                            else -> libraryState.SaveableStateProvider("memory-$memoryVisit-$parent") {
+                                if (spacesReady) MemoryLibrary(model, parent, { parent = it }, { open(it) }, ::export, ::startSearch, { selecting = it }, { deleting = it }, { showStructure(parent) })
+                                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                            }
                         }
                     }
                     else -> SettingsHome({ general = true }, { trash = true }, { backup = true }, { advanced = true }, { about = true }, { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))) })
@@ -122,20 +237,23 @@ import org.json.JSONObject
                 if (editor == null && record.running) Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(16.dp), color = Peach) {
                     TextButton(onClick = { scope.launch { model.notes.node(record.owner)?.let { open(it, true) } } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
                 }
-                if (editor == null && tab < 4 && !selecting && !general && !trash && !advanced && !about && importDestination == null) {
+                if (editor == null && tab < 4 && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
                     if (addMemory && tab == 3) {
-                        Box(Modifier.fillMaxSize().clickable { addMemory = false })
-                        SoftCard(Modifier.align(Alignment.BottomCenter).padding(start = 18.dp, end = 18.dp, bottom = 90.dp), color = Color.White) {
+                        BackHandler { addMemory = false }
+                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable { addMemory = false })
+                        SoftCard(Modifier.align(Alignment.BottomCenter).padding(start = 18.dp, end = 18.dp, bottom = 100.dp), color = Color.White) {
                             val location = nodes.find { it.id == parent }?.let { TreeRules.path(it, nodes) } ?: "记忆首页"
                             Text("创建到：$location", fontSize = 12.sp, color = Quiet)
-                            Button(onClick = { addMemory = false; folderName = ""; folderCreate = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp), colors = ButtonDefaults.buttonColors(containerColor = Lavender, contentColor = NoteInk)) { Icon(Icons.Default.CreateNewFolder, null); Spacer(Modifier.width(10.dp)); Text("创建分类") }
-                            Button(onClick = { addMemory = false; open(model.newNote("memory", parent), true) }, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp), colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = NoteInk)) { Icon(Icons.Default.Description, null); Spacer(Modifier.width(10.dp)); Text("创建记忆") }
+                            Spacer(Modifier.height(4.dp))
+                            Button(onClick = { addMemory = false; folderName = ""; folderCreate = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), colors = ButtonDefaults.buttonColors(containerColor = Lavender, contentColor = NoteInk)) { Icon(Icons.Default.CreateNewFolder, null); Spacer(Modifier.width(10.dp)); Text("创建分类") }
+                            Button(onClick = { addMemory = false; open(model.newNote("memory", parent), true) }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp), colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = NoteInk)) { Icon(Icons.Default.Description, null); Spacer(Modifier.width(10.dp)); Text("创建记忆") }
+                            Spacer(Modifier.height(4.dp))
                         }
                     }
                     FloatingActionButton(onClick = {
                         when (tab) {
                             0 -> { scheduleEdit = null; scheduleDialog = true }
-                            1 -> { todoEdit = null; todoDialog = true }
+                            1 -> { todoEdit = null; todoTaskEdit = null; todoDay = when (todoView) { "today" -> dayMillis(); "tomorrow" -> dayMillis(java.time.LocalDate.now().plusDays(1)); else -> null }; todoDialog = true }
                             2 -> scope.launch { val day = dayMillis(); val existing = model.notes.diary(day); open(existing ?: model.newNote("diary", day = day), existing == null) }
                             3 -> addMemory = !addMemory
                         }
@@ -143,27 +261,34 @@ import org.json.JSONObject
                 }
             }
         }
+        if (treeReturnChoice) SoftDialog("返回到哪里？", { treeReturnChoice = false }) {
+            Text("可以回到结构树继续浏览，或进入当前内容的上级分类。", color = Quiet)
+            Button(onClick = { editorSnapshot = null; editorStack.clear(); reveal = ""; structureFolder = false; treeReturnChoice = false; selecting = false }, modifier = Modifier.fillMaxWidth()) { Text("返回树形图") }
+            OutlinedButton(onClick = ::leaveTreeForParent, modifier = Modifier.fillMaxWidth()) { Text("返回上级") }
+        }
         if (folderCreate) SoftDialog("创建分类", { folderCreate = false }) {
             OutlinedTextField(folderName, { folderName = it }, label = { Text("分类名称") }, modifier = Modifier.fillMaxWidth())
             Button(onClick = { model.createFolder(folderName, parent); folderCreate = false }, modifier = Modifier.fillMaxWidth(), enabled = folderName.isNotBlank()) { Text("创建") }
         }
         if (scheduleDialog) ScheduleDialog(scheduleEdit, { scheduleDialog = false }) {
             if (it.reminderEnabled && android.os.Build.VERSION.SDK_INT >= 33) (context as? android.app.Activity)?.let { activity -> if (activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) activity.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 4101) }
-            model.schedule(it.copy(archived = scheduleEdit?.archived ?: false, deletedAt = scheduleEdit?.deletedAt)); scheduleDialog = false
+            model.schedule(it.copy(archived = scheduleEdit?.archived ?: false, deletedAt = scheduleEdit?.deletedAt, important = scheduleEdit?.important ?: false)); scheduleDialog = false
         }
-        if (todoDialog) QuickTodoCreateDialog(todoEdit?.copy(items = todoEdit!!.items.filter { it.deletedAt == null }), { todoDialog = false; todoEdit = null }) { title, tasks, due, reminder ->
+        if (todoDialog && (todoDay != null || todoTaskEdit != null)) TaskDetails(todoTaskEdit, todoTaskEdit?.boardId ?: 0, todoTaskEdit?.plannedDay ?: todoDay, model, { todoDialog = false; todoEdit = null; todoTaskEdit = null; todoDay = null }, todoEdit?.board)
+        if (todoDialog && todoDay == null && todoTaskEdit == null) QuickTodoCreateDialog(todoEdit?.copy(items = todoEdit!!.items.filter { it.deletedAt == null }), null, { todoDialog = false; todoEdit = null; todoTaskEdit = null; todoDay = null }) { title, tasks, due, reminder, timeMode ->
             if (reminder != null && android.os.Build.VERSION.SDK_INT >= 33) (context as? android.app.Activity)?.let { activity -> if (activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) activity.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 4101) }
-            model.saveBoard(todoEdit, title, tasks, due, reminder); todoDialog = false; todoEdit = null
+            model.saveBoardNow(todoEdit, title, tasks, due, reminder, null, timeMode)
         }
-        if (search) GlobalSearch(model, tab, { search = false }, { n, query -> search = false; tab = if (n.kind == "diary") 2 else 3; if (n.kind == "memory") parent = n.parentId; editorStack.clear(); open(n, false, query) }, { event -> search = false; tab = 0; scheduleEdit = event; scheduleDialog = true }, { board -> search = false; tab = 1; todoEdit = board; todoDialog = true })
+        if (imageBusy) SoftDialog("正在应用图片设置", {}) { CircularProgressIndicator(); Text("正在检查图片引用并保存副本，请稍候。") }
         deleting?.let { ids ->
             val targets = ids.flatMap { TreeRules.descendants(it, nodes) }.toSet()
             val affected = nodes.filter { it.id in targets && it.deletedAt == null }
-            SoftDialog("移到回收站", { deleting = null }) {
-                Text("包含 ${affected.count { it.kind == "folder" }} 个分类、${affected.count { it.kind != "folder" }} 条记录。可以从回收站恢复。")
-                Button(onClick = { deleting = null; model.trash(ids) { group -> scope.launch { val result = snackbar.showSnackbar("已移到回收站", "撤销", duration = SnackbarDuration.Long); if (result == SnackbarResult.ActionPerformed) model.restore(group) } } }) { Text("删除") }
-                TextButton(onClick = { deleting = null }) { Text("取消") }
-            }
+            ConfirmTrashDialog(trashSummary(affected.count { it.kind == "folder" }, affected.count { it.kind != "folder" }, showFolders = affected.any { it.kind != "diary" }),
+                onCancel = { deleting = null }, enabled = affected.isNotEmpty(),
+                onDelete = { deleting = null
+                    if (affected.all { it.kind == "diary" }) model.trash(ids)
+                    else model.trash(ids) { group -> scope.launch { val result = snackbar.showSnackbar("已移到回收站", "撤销", duration = SnackbarDuration.Long); if (result == SnackbarResult.ActionPerformed) model.restore(group) } }
+                })
         }
         exportIds?.let { ids -> NoteExportDialog(model, ids, { exportIds = null }) }
         if (backup) BackupDialog(model, { backup = false })

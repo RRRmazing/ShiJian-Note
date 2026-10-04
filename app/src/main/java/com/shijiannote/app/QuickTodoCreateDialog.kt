@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +50,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -56,6 +60,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -84,8 +89,9 @@ internal data class BoardReminderDraft(
     val advanceHours: Int = 0,
     val advanceMinutes: Int = 0,
     val baseAt: Long = System.currentTimeMillis(),
-    val customDays: Int = 1
-)
+    val customDays: Int = 1,
+    val singleAt: Long? = null
+) : java.io.Serializable
 
 private fun TodoBoard.toReminderDraft(): BoardReminderDraft? = reminderAt?.let {
     BoardReminderDraft(
@@ -93,8 +99,9 @@ private fun TodoBoard.toReminderDraft(): BoardReminderDraft? = reminderAt?.let {
         advanceDays = reminderDays,
         advanceHours = reminderHours,
         advanceMinutes = reminderMinutes,
-        baseAt = reminderBaseAt ?: System.currentTimeMillis(),
-        customDays = reminderCustomDays.coerceAtLeast(1)
+        baseAt = reminderBaseAt ?: reminderAt ?: System.currentTimeMillis(),
+        customDays = reminderCustomDays.coerceAtLeast(1),
+        singleAt = reminderAt.takeIf { reminderRule == null }
     )
 }
 
@@ -102,12 +109,14 @@ private fun TodoBoard.toReminderDraft(): BoardReminderDraft? = reminderAt?.let {
 @Composable
 internal fun QuickTodoCreateDialog(
     board: TodoBoardWithItems? = null,
+    plannedDay: Long? = null,
     onDismiss: () -> Unit,
-    onSave: (String, List<String>, Long?, BoardReminderDraft?) -> Unit
+    onSave: suspend (String, List<String>, Long?, BoardReminderDraft?, String) -> Unit
 ) {
     val boardId = board?.board?.id
-    var title by remember(boardId) { mutableStateOf(board?.board?.summary.orEmpty()) }
-    val tasks = remember(boardId) {
+    var timeMode by rememberSaveable(boardId) { mutableStateOf(board?.board?.timeMode ?: "UNIFIED") }
+    var title by rememberSaveable(boardId) { mutableStateOf(board?.board?.summary.orEmpty()) }
+    val tasks = rememberSaveable(boardId, saver = listSaver(save = { it.toList() }, restore = { mutableStateListOf<String>().apply { addAll(it) } })) {
         mutableStateListOf<String>().apply {
             addAll(board?.items?.sortedBy { it.position }?.map { it.text }.orEmpty())
             if (isEmpty()) add("")
@@ -122,25 +131,23 @@ internal fun QuickTodoCreateDialog(
     var focusTaskIndex by remember(boardId) { mutableIntStateOf(-1) }
     var showDeadlineSetup by remember(boardId) { mutableStateOf(false) }
     var showReminderSetup by remember(boardId) { mutableStateOf(false) }
-    var dueAt by remember(boardId) { mutableStateOf(board?.board?.dueDate) }
-    var reminderDraft by remember(boardId) { mutableStateOf(board?.board?.toReminderDraft()) }
+    val initialDue = remember(boardId) { board?.board?.dueDate }
+    val initialReminder = remember(boardId) { board?.board?.toReminderDraft() }
+    var dueAt by rememberSaveable(boardId) { mutableStateOf(initialDue) }
+    var reminderDraft by rememberSaveable(boardId) { mutableStateOf(initialReminder) }
+    var confirmDiscard by rememberSaveable { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val taskScroll = rememberScrollState()
     val scope = rememberCoroutineScope()
 
-    fun saveIfNeeded() {
-        val enteredTasks = tasks.filter { it.isNotBlank() }
-        if (board != null || title.isNotBlank() || enteredTasks.isNotEmpty()) onSave(title, enteredTasks, dueAt, reminderDraft)
-    }
-    fun leave() { saveIfNeeded(); keyboard?.hide(); focusManager.clearFocus(); onDismiss() }
-
-    val imeVisible = WindowInsets.isImeVisible
-    BackHandler {
-        if (imeVisible) {
-            keyboard?.hide()
-            focusManager.clearFocus()
-        } else leave()
+    fun leave() {
+        if (saving) return
+        val dirty = title != board?.board?.summary.orEmpty() || tasks.filter { it.isNotBlank() } != board?.items?.sortedBy { it.position }?.map { it.text }.orEmpty() || dueAt != initialDue || reminderDraft != initialReminder || timeMode != (board?.board?.timeMode ?: "UNIFIED")
+        keyboard?.hide(); focusManager.clearFocus()
+        if (dirty) confirmDiscard = true else onDismiss()
     }
     LaunchedEffect(focusTaskIndex) {
         if (focusTaskIndex >= 0) {
@@ -149,9 +156,11 @@ internal fun QuickTodoCreateDialog(
         }
     }
 
-    Dialog(onDismissRequest = ::leave, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = ::leave, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false)) {
+        val imeVisible = WindowInsets.isImeVisible
+        BackHandler { if (imeVisible) { keyboard?.hide(); focusManager.clearFocus() } else leave() }
         Box(
-            modifier = Modifier.fillMaxSize().imePadding().padding(start = 20.dp, end = 20.dp, top = 36.dp, bottom = 4.dp),
+            modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(start = 20.dp, end = 20.dp, top = 36.dp, bottom = 4.dp),
             contentAlignment = Alignment.TopCenter
         ) {
             Surface(
@@ -159,7 +168,15 @@ internal fun QuickTodoCreateDialog(
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
                 color = Color.White
             ) {
-                Column(Modifier.fillMaxWidth().padding(24.dp)) {
+                Column(Modifier.fillMaxWidth().padding(20.dp).verticalScroll(rememberScrollState())) {
+                    Text(if (board != null) "编辑待办框" else "添加待办框", color = QuickBlue, fontSize = 16.sp)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (timeMode == "UNIFIED") Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("统一时间") }
+                        else OutlinedButton(onClick = { timeMode = "UNIFIED" }, enabled = board == null, modifier = Modifier.weight(1f)) { Text("统一时间") }
+                        if (timeMode == "INDEPENDENT") Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("独立时间") }
+                        else OutlinedButton(onClick = { timeMode = "INDEPENDENT" }, enabled = board == null, modifier = Modifier.weight(1f)) { Text("独立时间") }
+                    }
+                    Text(if (timeMode == "UNIFIED") "整个待办框共用截止时间和提醒，创建后类型固定。" else "每条事项分别设置时间和提醒，创建后类型固定。", color = QuickMuted, fontSize = 12.sp)
                     Column(
                         modifier = Modifier.fillMaxWidth().heightIn(max = if (imeVisible) 320.dp else 460.dp).verticalScroll(taskScroll),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -213,27 +230,28 @@ internal fun QuickTodoCreateDialog(
                         }
                     }
                     Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { showDeadlineSetup = true }) { Text("截止时间") }
-                        Spacer(Modifier.width(12.dp))
-                        if (dueAt == null) Text("未设置", color = QuickMuted, modifier = Modifier.weight(1f))
-                        else RemovableSettingBox(
-                            text = formatDeadlineDateTime(dueAt!!),
-                            onClick = { showDeadlineSetup = true },
-                            onClear = { dueAt = null },
-                            modifier = Modifier.weight(1f)
-                        )
+                    if (timeMode == "UNIFIED") {
+                    QuickSettingRow("截止时间", dueAt?.let { formatDeadlineDateTime(it) },
+                        onClick = { showDeadlineSetup = true },
+                        onClear = { dueAt = null })
+                    QuickSettingRow("提醒我", reminderDraft?.let { reminderDisplayTime(it, dueAt)?.let(::formatDeadlineDateTime) },
+                        onClick = { showReminderSetup = true }, onClear = { reminderDraft = null })
+                    reminderDraft?.let { draft -> OutlinedButton(onClick = { showReminderSetup = true }, modifier = Modifier.fillMaxWidth()) { Text(describeReminder(draft)) } }
                     }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { showReminderSetup = true }) { Text("提醒我") }
-                        Spacer(Modifier.width(12.dp))
-                        if (reminderDraft == null) Text("未设置", color = QuickMuted, modifier = Modifier.weight(1f))
-                        else RemovableSettingBox(
-                            text = describeReminder(reminderDraft!!),
-                            onClick = { showReminderSetup = true },
-                            onClear = { reminderDraft = null },
-                            modifier = Modifier.weight(1f)
-                        )
+                    if (error.isNotBlank()) Text(error, color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = ::leave, modifier = Modifier.weight(1f), enabled = !saving) { Text("取消") }
+                        Button(onClick = {
+                            val reminder = reminderDraft.takeIf { timeMode == "UNIFIED" }
+                            if (reminder != null && dueAt != null && reminderDisplayTime(reminder, dueAt)!! > dueAt!!) { error = "提醒时间不能晚于截止时间"; return@Button }
+                            saving = true; error = ""
+                            scope.launch {
+                                runCatching { onSave(title, tasks.filter { it.isNotBlank() }, dueAt.takeIf { timeMode == "UNIFIED" }, reminder, timeMode) }
+                                    .onSuccess { keyboard?.hide(); focusManager.clearFocus(); onDismiss() }
+                                    .onFailure { error = it.message ?: "保存失败，填写内容已保留，请重试" }
+                                saving = false
+                            }
+                        }, modifier = Modifier.weight(1f), enabled = !saving && (title.isNotBlank() || tasks.any { it.isNotBlank() })) { Text(if (saving) "保存中…" else "保存") }
                     }
                 }
             }
@@ -256,10 +274,17 @@ internal fun QuickTodoCreateDialog(
             showReminderSetup = false
         }
     )
+    if (confirmDiscard) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmDiscard = false },
+        title = { Text(if (board == null) "放弃添加待办？" else "放弃本次修改？") },
+        text = { Text("已填写的内容尚未保存。放弃后需要重新输入。") },
+        confirmButton = { Button(onClick = { confirmDiscard = false; onDismiss() }, colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.error)) { Text("放弃") } },
+        dismissButton = { OutlinedButton(onClick = { confirmDiscard = false }) { Text("继续编辑") } }
+    )
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DeadlineSetupDialog(
+internal fun DeadlineSetupDialog(
     initialDeadline: Long?,
     onDismiss: () -> Unit,
     onConfirm: (Long) -> Unit
@@ -281,20 +306,19 @@ private fun DeadlineSetupDialog(
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 32.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(horizontal = 20.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
             Surface(Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(30.dp), color = Color.White) {
                 Column(Modifier.fillMaxWidth().padding(24.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("设置截止时间", color = QuickInk, fontSize = 25.sp)
+                    Text("设置截止时间为", color = QuickInk, fontSize = 25.sp)
                     Column {
-                        Text("截止时间", color = QuickInk, fontSize = 18.sp)
                         Text("${formatFullDate(selectedDate)} ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}", color = QuickBlue, fontSize = 17.sp)
                     }
-                    QuickDeadlineCalendar(month = month, selected = selectedDate, onMonthChange = { month = it }, onSelect = { selectedDate = it })
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("时间", color = QuickInk, fontSize = 17.sp)
                         QuickNumber("时", hour, 23) { hour = it }
                         QuickNumber("分", minute, 59) { minute = it }
                     }
+                    QuickDeadlineCalendar(month = month, selected = selectedDate, onMonthChange = { month = it }, onSelect = { selectedDate = it })
                     Row(Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
                         Spacer(Modifier.width(10.dp))
@@ -305,6 +329,7 @@ private fun DeadlineSetupDialog(
         }
     }
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun QuickDeadlineCalendar(
     month: YearMonth,
@@ -312,25 +337,33 @@ private fun QuickDeadlineCalendar(
     onMonthChange: (YearMonth) -> Unit,
     onSelect: (LocalDate) -> Unit
 ) {
+    val fontScale = LocalDensity.current.fontScale
+    val cellHeight = maxOf(44f, 28f * fontScale + 8f).dp
     val cells = mutableListOf<LocalDate?>().apply {
         repeat(month.atDay(1).dayOfWeek.value % 7) { add(null) }
         (1..month.lengthOfMonth()).forEach { add(month.atDay(it)) }
         while (size % 7 != 0) add(null)
     }
     Column(Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val stacked = maxWidth / fontScale < 250.dp
+        Column {
+        if (stacked) Text("${month.year}年${month.monthValue}月", color = QuickInk, fontSize = 19.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("《", color = QuickBlue, fontSize = 20.sp, modifier = Modifier.clickable { onMonthChange(month.minusYears(1)) }.padding(4.dp))
             Spacer(Modifier.width(6.dp))
             IconButton(onClick = { onMonthChange(month.minusMonths(1)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ChevronLeft, "上个月") }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text("${month.year}年${month.monthValue}月", color = QuickInk, fontSize = 19.sp) }
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { if (!stacked) Text("${month.year}年${month.monthValue}月", color = QuickInk, fontSize = 19.sp) }
             IconButton(onClick = { onMonthChange(month.plusMonths(1)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ChevronRight, "下个月") }
             Spacer(Modifier.width(6.dp))
             Text("》", color = QuickBlue, fontSize = 20.sp, modifier = Modifier.clickable { onMonthChange(month.plusYears(1)) }.padding(4.dp))
         }
+        }
+        }
         Row(Modifier.fillMaxWidth()) {
             listOf("日", "一", "二", "三", "四", "五", "六").forEach { label ->
-                Box(Modifier.weight(1f).height(28.dp), contentAlignment = Alignment.Center) {
-                    Text(label, color = QuickMuted, fontSize = 13.sp)
+                Box(Modifier.weight(1f).height(maxOf(28f, 16f * fontScale + 4f).dp), contentAlignment = Alignment.Center) {
+                    Text(label, color = QuickMuted, fontSize = 13.sp, lineHeight = 16.sp)
                 }
             }
         }
@@ -338,17 +371,17 @@ private fun QuickDeadlineCalendar(
             Row(Modifier.fillMaxWidth()) {
                 week.forEach { day ->
                     if (day == null) {
-                        Spacer(Modifier.weight(1f).height(52.dp))
+                        Spacer(Modifier.weight(1f).height(cellHeight))
                     } else {
                         Box(
-                            Modifier.weight(1f).height(52.dp).padding(2.dp)
+                            Modifier.weight(1f).height(cellHeight).padding(2.dp)
                                 .background(if (day == selected) QuickBlue else Color.Transparent, CircleShape)
                                 .clickable { onSelect(day) },
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(day.dayOfMonth.toString(), color = if (day == selected) Color.White else QuickInk, fontSize = 14.sp)
-                                Text(calendarAnnotation(day), color = if (day == selected) Color.White else QuickMuted, fontSize = 9.sp)
+                                Text(day.dayOfMonth.toString(), color = if (day == selected) Color.White else QuickInk, fontSize = 14.sp, lineHeight = 16.sp)
+                                Text(calendarAnnotation(day), color = if (day == selected) Color.White else QuickMuted, fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -360,13 +393,10 @@ private fun QuickDeadlineCalendar(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boolean, onDismiss: () -> Unit, onConfirm: (BoardReminderDraft) -> Unit) {
-    var repeating by remember { mutableStateOf(initial?.repeatRule != null || !hasDeadline) }
-    var singleDays by remember { mutableStateOf(initial?.advanceDays?.takeIf { !repeating }?.toString().orEmpty()) }
-    var singleHours by remember { mutableStateOf(initial?.advanceHours?.takeIf { !repeating }?.toString().orEmpty()) }
-    var singleMinutes by remember { mutableStateOf(initial?.advanceMinutes?.takeIf { !repeating }?.toString().orEmpty()) }
+internal fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boolean = true, onDismiss: () -> Unit, onConfirm: (BoardReminderDraft) -> Unit) {
+    var repeating by remember { mutableStateOf(initial?.repeatRule != null) }
     var rule by remember { mutableStateOf(initial?.repeatRule ?: ReminderScheduler.RULE_WEEKDAYS) }
-    var baseAt by remember { mutableStateOf(initial?.baseAt ?: System.currentTimeMillis()) }
+    var baseAt by remember { mutableStateOf(initial?.singleAt ?: initial?.baseAt ?: System.currentTimeMillis()) }
     var repeatHour by remember { mutableStateOf(SimpleDateFormat("H", Locale.CHINA).format(Date(baseAt))) }
     var repeatMinute by remember { mutableStateOf(SimpleDateFormat("m", Locale.CHINA).format(Date(baseAt))) }
     var customDays by remember { mutableStateOf(initial?.customDays?.toString() ?: "1") }
@@ -379,6 +409,8 @@ private fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boole
             timeInMillis = baseAt
             set(Calendar.HOUR_OF_DAY, repeatHour.toIntOrNull()?.coerceIn(0, 23) ?: 0)
             set(Calendar.MINUTE, repeatMinute.toIntOrNull()?.coerceIn(0, 59) ?: 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
         baseAt = calendar.timeInMillis
     }
@@ -389,26 +421,18 @@ private fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boole
                 Column(Modifier.fillMaxWidth().padding(24.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Text("提醒我", color = QuickInk, fontSize = 25.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (!repeating) Button(onClick = { repeating = false }, enabled = hasDeadline) { Text("单次提醒") }
-                        else OutlinedButton(onClick = { repeating = false }, enabled = hasDeadline) { Text("单次提醒") }
+                        if (!repeating) Button(onClick = { repeating = false }) { Text("单次提醒") }
+                        else OutlinedButton(onClick = { repeating = false }) { Text("单次提醒") }
                         if (repeating) Button(onClick = { repeating = true }) { Text("重复提醒") }
-                        else OutlinedButton(onClick = { repeating = true; singleDays = ""; singleHours = ""; singleMinutes = "" }) { Text("重复提醒") }
+                        else OutlinedButton(onClick = { repeating = true }) { Text("重复提醒") }
                     }
-                    if (!hasDeadline) Text("未设置截止时间时，可使用重复提醒；服务会持续到清除。", color = QuickMuted, fontSize = 12.sp)
-                    if (!repeating) {
-                        Text("提前提醒（默认为准时提醒）", color = QuickInk, fontSize = 17.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            QuickNumber("天", singleDays, 999) { singleDays = it }
-                            QuickNumber("时", singleHours, 23) { singleHours = it }
-                            QuickNumber("分", singleMinutes, 59) { singleMinutes = it }
-                        }
-                    } else {
-                        Text("基准时间", color = QuickInk, fontSize = 17.sp)
+                    Text(if (repeating) "基准提醒时间" else "提醒时间", color = QuickInk, fontSize = 17.sp)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { showBaseDatePicker = true }) { Text(formatFullDate(baseAt.toLocalDate())) }
                             QuickNumber("时", repeatHour, 23) { repeatHour = it; updateBaseTime() }
                             QuickNumber("分", repeatMinute, 59) { repeatMinute = it; updateBaseTime() }
                         }
+                    if (repeating) {
                         Text("重复方式", color = QuickInk, fontSize = 17.sp)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             RepeatRuleButton("周一至周五", rule == ReminderScheduler.RULE_WEEKDAYS, Modifier.weight(1f)) { rule = ReminderScheduler.RULE_WEEKDAYS }
@@ -432,18 +456,14 @@ private fun BoardReminderDialog(initial: BoardReminderDraft?, hasDeadline: Boole
                         OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
                         Spacer(Modifier.width(10.dp))
                         Button(onClick = {
+                            updateBaseTime()
                             val draft = if (repeating) {
-                                updateBaseTime()
                                 BoardReminderDraft(repeatRule = rule, baseAt = baseAt, customDays = customDays.toIntOrNull()?.coerceIn(1, 999) ?: 1)
                             } else {
-                                BoardReminderDraft(
-                                    advanceDays = singleDays.toIntOrNull()?.coerceIn(0, 999) ?: 0,
-                                    advanceHours = singleHours.toIntOrNull()?.coerceIn(0, 23) ?: 0,
-                                    advanceMinutes = singleMinutes.toIntOrNull()?.coerceIn(0, 59) ?: 0
-                                )
+                                BoardReminderDraft(baseAt = baseAt, singleAt = baseAt)
                             }
                             onConfirm(draft)
-                        }, modifier = Modifier.weight(1f)) { Text("确定") }
+                        }, modifier = Modifier.weight(1f), enabled = repeatHour.toIntOrNull() in 0..23 && repeatMinute.toIntOrNull() in 0..59 && (!repeating || rule != ReminderScheduler.RULE_CUSTOM_DAYS || customDays.toIntOrNull() in 1..999)) { Text("确定") }
                     }
                 }
             }
@@ -488,6 +508,25 @@ private fun ReminderServiceIntroductionDialog(onDismiss: () -> Unit) {
     }
 }
 @Composable
+private fun QuickSettingRow(label: String, value: String?, onClick: () -> Unit, onClear: () -> Unit) {
+    val fontScale = LocalDensity.current.fontScale
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val setting: @Composable (Modifier) -> Unit = { modifier ->
+            if (value == null) Text("未设置", color = QuickMuted, modifier = modifier)
+            else RemovableSettingBox(value, onClick, onClear, modifier)
+        }
+        if (maxWidth / fontScale < 300.dp) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedButton(onClick = onClick) { Text(label) }
+            setting(Modifier.fillMaxWidth())
+        } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = onClick) { Text(label) }
+            Spacer(Modifier.width(12.dp))
+            setting(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
 private fun RemovableSettingBox(
     text: String,
     onClick: () -> Unit,
@@ -499,7 +538,7 @@ private fun RemovableSettingBox(
             onClick = onClick,
             modifier = Modifier.fillMaxWidth().padding(end = 8.dp)
         ) {
-            Text(text, fontSize = 12.sp, maxLines = 1)
+            Text(text, fontSize = 13.sp, lineHeight = 18.sp)
         }
         IconButton(
             onClick = onClear,
@@ -511,9 +550,7 @@ private fun RemovableSettingBox(
 }
 
 private fun describeReminder(draft: BoardReminderDraft): String {
-    if (draft.repeatRule == null) {
-        return if (draft.advanceDays == 0 && draft.advanceHours == 0 && draft.advanceMinutes == 0) "准时提醒" else "提前${draft.advanceDays}天${draft.advanceHours}时${draft.advanceMinutes}分提醒"
-    }
+    if (draft.repeatRule == null) return "单次提醒"
     val label = when (draft.repeatRule) {
         ReminderScheduler.RULE_WEEKDAYS -> "周一至周五"
         ReminderScheduler.RULE_WEEKENDS -> "周末"
@@ -526,8 +563,24 @@ private fun describeReminder(draft: BoardReminderDraft): String {
         ReminderScheduler.RULE_CUSTOM_DAYS -> "每隔${draft.customDays}天"
         else -> "重复提醒"
     }
-    val time = SimpleDateFormat("HH时mm分", Locale.CHINA).format(Date(draft.baseAt))
-    return "以${formatFullDate(draft.baseAt.toLocalDate())}${time}为基准  $label"
+    return label
+}
+internal fun reminderDisplayTime(draft: BoardReminderDraft, due: Long?): Long? =
+    if (draft.repeatRule != null) draft.baseAt else draft.singleAt ?: draft.baseAt
+
+@Composable internal fun InlineDayTime(label: String, day: Long, value: Long?, onChange: (Long?) -> Unit) {
+    val initial = java.time.Instant.ofEpochMilli(value ?: day).atZone(ZoneId.systemDefault())
+    var hour by rememberSaveable(day) { mutableStateOf(initial.hour.toString()) }
+    var minute by rememberSaveable(day) { mutableStateOf(initial.minute.toString().padStart(2, '0')) }
+    fun update() {
+        val h = hour.toIntOrNull(); val m = minute.toIntOrNull()
+        onChange(if (h != null && m != null) java.time.Instant.ofEpochMilli(day).atZone(ZoneId.systemDefault()).toLocalDate().atTime(h, m).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() else null)
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, color = QuickMuted, modifier = Modifier.weight(1f))
+        QuickNumber("时", hour, 23) { hour = it; update() }
+        QuickNumber("分", minute, 59) { minute = it; update() }
+    }
 }
 @Composable
 private fun RepeatRuleButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
@@ -559,4 +612,4 @@ private fun QuickNumber(label: String, value: String, maximum: Int, onChange: (S
 }
 
 private fun Long.toLocalDate(): LocalDate = java.time.Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).toLocalDate()
-private fun formatFullDate(date: LocalDate): String = "${date.year}年${date.monthValue}月${date.dayOfMonth}日"
+private fun formatFullDate(date: LocalDate): String = "${if (date.year == LocalDate.now().year) "今年" else "${date.year}年"}${date.monthValue}月${date.dayOfMonth}日"

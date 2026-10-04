@@ -4,25 +4,100 @@ import com.shijiannote.app.data.NoteNode
 import org.junit.Assert.*
 import org.junit.Test
 import com.shijiannote.app.data.TodoItem
+import com.shijiannote.app.data.TodoBoard
 import java.time.LocalDate
 import java.time.ZoneId
 
 class NoteRulesTest {
+    @Test fun forcedSettingsOverrideNestedRulesAndRestoreOriginalConfigurationWhenReleased() {
+        val root = folder("root").copy(forceChildren = true, imageStorage = "copy", imageDisplay = "card")
+        val child = folder("child", root.id).copy(forceChildren = true, imageStorage = "reference", imageDisplay = "preview")
+        val note = NoteNode(id = "note", parentId = child.id, imageDisplay = "preview", imageStorage = "reference")
+        val all = listOf(root, child, note)
+        assertEquals(root, TreeRules.forcedBy(child, all))
+        assertEquals(root, TreeRules.forcedBy(note, all))
+        assertEquals("copy", TreeRules.imagePreference(note, all, true, "reference"))
+        assertEquals("card", TreeRules.imageDisplay(NoteBlock(type = "image", display = "preview"), note, all, "preview"))
+        val released = listOf(root.copy(forceChildren = false), child, note)
+        assertEquals(child, TreeRules.forcedBy(note, released))
+        assertEquals("reference", TreeRules.imagePreference(note, released, true, "copy"))
+        assertEquals("preview", TreeRules.imagePreference(note, released, false, "card"))
+    }
+
+    @Test fun deselectingAChildCannotReincludeItThroughExportAncestorExpansion() {
+        val root = folder("root")
+        val branch = folder("branch", root.id)
+        val leaf = NoteNode(id = "leaf", parentId = branch.id)
+        val sibling = NoteNode(id = "sibling", parentId = root.id)
+        val all = listOf(root, branch, leaf, sibling)
+        val selected = TreeRules.toggleSelection(emptySet(), root, all)
+        assertEquals(all.map { it.id }.toSet(), selected)
+        val reduced = TreeRules.toggleSelection(selected, leaf, all)
+        assertEquals(setOf("sibling"), ExportEngine.scope(reduced, all).map { it.id }.toSet())
+        assertEquals(listOf(root), TreeRules.topLevel(selected, all))
+    }
+
+    @Test fun structureTreesRespectExportRootsAndUnicodeCharacterLimit() {
+        val parent = folder("outside")
+        val a = folder("a", parent.id).copy(title = "你好啊哈哈哈还有")
+        val b = folder("b", parent.id)
+        val leaf = NoteNode(id = "leaf", parentId = a.id, title = "😀😀😀😀😀😀第七")
+        val standalone = NoteNode(id = "standalone", title = "独立")
+        val selected = listOf(a, b, leaf, standalone)
+        val trees = TreeRules.exportStructures(selected)
+        assertEquals(setOf("a", "b"), trees.keys)
+        assertTrue(trees.getValue("a").startsWith("《你好啊哈哈哈...》"))
+        assertTrue(trees.getValue("a").contains("└── 😀😀😀😀😀😀..."))
+        assertFalse(trees.values.any { it.contains("outside") || it.contains("独立") })
+        assertEquals(emptyMap<String, String>(), TreeRules.exportStructures(listOf(standalone)))
+    }
+
+    @Test fun structureBranchesKeepAncestorLinesUntilTheLastSibling() {
+        val root = folder("root")
+        val branch = folder("branch", root.id)
+        val leaf = NoteNode(id = "leaf", parentId = branch.id)
+        val last = folder("last", root.id).copy(position = 1)
+        val lastLeaf = NoteNode(id = "last-leaf", parentId = last.id)
+        val prefixes = TreeRules.structure(listOf(root, branch, leaf, last, lastLeaf)).associate { it.node.id to it.prefix }
+        assertEquals("", prefixes[root.id])
+        assertEquals("├── ", prefixes[branch.id])
+        assertEquals("│   └── ", prefixes[leaf.id])
+        assertEquals("└── ", prefixes[last.id])
+        assertEquals("    └── ", prefixes[lastLeaf.id])
+    }
+
+    @Test fun dailyTasksBecomeTodayAtMidnightAndOverdueAtTheirDeadline() {
+        val zone = ZoneId.of("Asia/Shanghai")
+        val date = LocalDate.of(2026, 10, 4)
+        fun at(day: LocalDate, hour: Int, minute: Int = 0) = day.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+        val planned = at(date.plusDays(1), 0)
+        val item = TodoItem(boardId = 1, text = "明天", plannedDay = planned, dueAt = at(date.plusDays(1), 16))
+        val board = TodoBoard(summary = "计划", timeMode = "INDEPENDENT")
+        assertTrue(taskInView(item, board, "tomorrow", at(date, 12), zone))
+        assertFalse(taskInView(item, board, "today", at(date, 12), zone))
+        assertTrue(taskInView(item, board, "today", at(date.plusDays(1), 8), zone))
+        assertFalse(taskInView(item, board, "today", at(date.plusDays(1), 17), zone))
+        assertTrue(taskInView(item, board, "overdue", at(date.plusDays(1), 17), zone))
+        assertFalse(taskInView(item.copy(completed = true), board, "today", at(date.plusDays(1), 8), zone))
+        assertTrue(taskInView(item.copy(completed = true), board, "today", at(date.plusDays(1), 8), zone, includeCompleted = true))
+    }
+
+    @Test fun dailyDeadlineUsesLocalMidnightEvenAcrossDaylightSaving() {
+        val zone = ZoneId.of("America/New_York")
+        val start = LocalDate.of(2026, 3, 8).atStartOfDay(zone).toInstant().toEpochMilli()
+        assertEquals(23 * 3_600_000L - 1, planDeadline(start, zone) - start)
+    }
+
+    @Test fun reminderDisplayIsTheActualSingleTimeOrRepeatBase() {
+        val due = 200_000_000L
+        assertEquals(123L, reminderDisplayTime(BoardReminderDraft(repeatRule = "DAILY", baseAt = 123), due))
+        assertEquals(123L, reminderDisplayTime(BoardReminderDraft(singleAt = 123), due))
+    }
     @Test fun insertingListRowsPreservesUnchangedTaskIdentity() {
         val a = TodoItem(id = 1, boardId = 1, text = "买牛奶", completed = true, position = 0)
         val b = TodoItem(id = 2, boardId = 1, text = "读书", important = true, position = 1)
         assertEquals(listOf(null, a, b), matchTaskEdits(listOf(a, b), listOf("新事项", "买牛奶", "读书")))
         assertEquals(listOf(b, a), matchTaskEdits(listOf(a, b), listOf("读书", "买牛奶")))
-    }
-    @Test fun repeatUsesCalendarDaysAcrossDaylightSaving() {
-        val zone = ZoneId.of("America/New_York")
-        val date = LocalDate.of(2026, 3, 7)
-        val morning = date.atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
-        val task = TodoItem(boardId = 1, text = "每天", plannedDay = date.atStartOfDay(zone).toInstant().toEpochMilli(), reminderAt = morning, repeatDays = 1)
-        val next = nextRepeatedTask(task, date, zone)
-        assertEquals(date.plusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli(), next.reminderAt)
-        assertEquals(23 * 3_600_000L, next.reminderAt!! - morning)
-        assertFalse(next.repeatSpawned)
     }
     @Test fun selectedFormattingTracksInsertDeleteAndPartialRemoval() {
         val bold = NoteBlock(text = "abcdef").toggleMark(1, 5, "b")

@@ -67,92 +67,11 @@ private val TodoDialogBlue = Color(0xFF587BB9)
 internal fun TodoReminderDialog(
     board: TodoBoardWithItems?,
     onDismiss: () -> Unit,
-    onSave: (String, Long?, Long?, Int, Int, Int, List<String>) -> Unit
+    onSave: (String, Long?, Long?, Int, Int, Int, List<String>, String, BoardReminderDraft?) -> Unit
 ) {
-    var summary by remember(board?.board?.id) { mutableStateOf(board?.board?.summary.orEmpty()) }
-    var dueDate by remember(board?.board?.id) { mutableStateOf(board?.board?.dueDate) }
-    var showDatePicker by remember { mutableStateOf(false) }
-    var reminderEnabled by remember(board?.board?.id) { mutableStateOf(board?.board?.reminderAt != null) }
-    var reminderAt by remember(board?.board?.id) { mutableStateOf(board?.board?.reminderAt ?: board?.board?.dueDate ?: System.currentTimeMillis()) }
-    var days by remember(board?.board?.id) { mutableStateOf(board?.board?.reminderDays?.takeIf { it > 0 }?.toString().orEmpty()) }
-    var hours by remember(board?.board?.id) { mutableStateOf(board?.board?.reminderHours?.takeIf { it > 0 }?.toString().orEmpty()) }
-    var minutes by remember(board?.board?.id) { mutableStateOf(board?.board?.reminderMinutes?.takeIf { it > 0 }?.toString().orEmpty()) }
-    val tasks = remember(board?.board?.id) { mutableStateListOf(*(board?.items?.sortedBy { it.position }?.map { it.text }?.toTypedArray() ?: arrayOf(""))) }
-    val context = androidx.compose.ui.platform.LocalContext.current
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (board == null) "新建待办框" else "更改待办框") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(summary, { summary = it }, label = { Text("摘要") }, placeholder = { Text("例如：本周复习计划") }, singleLine = true)
-                Text("具体任务", color = TodoDialogMuted, fontSize = 13.sp)
-                tasks.forEachIndexed { index, task ->
-                    OutlinedTextField(task, { tasks[index] = it }, label = { Text(if (index == 0) "输入第一项任务" else "继续添加任务") }, leadingIcon = { Checkbox(false, {}) }, singleLine = true)
-                }
-                OutlinedButton(onClick = { tasks.add("") }) { Text("＋ 添加一项") }
-                if (dueDate == null) {
-                    OutlinedButton(onClick = { showDatePicker = true }) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text("设置截止日期（可选）") }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AssistChip(onClick = { showDatePicker = true }, label = { Text("截止：${formatDeadlineDate(dueDate!!)}") })
-                        IconButton(onClick = { dueDate = null }) { Icon(Icons.Default.Close, "清除截止日期") }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it })
-                        Text("设置截止提醒")
-                    }
-                    if (reminderEnabled) {
-                        OutlinedButton(onClick = {
-                            val calendar = Calendar.getInstance().apply { timeInMillis = reminderAt }
-                            TimePickerDialog(context, { _, hour, minute ->
-                                val due = Calendar.getInstance().apply { timeInMillis = dueDate!! }
-                                due.set(Calendar.HOUR_OF_DAY, hour)
-                                due.set(Calendar.MINUTE, minute)
-                                due.set(Calendar.SECOND, 0)
-                                due.set(Calendar.MILLISECOND, 0)
-                                reminderAt = due.timeInMillis
-                            }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
-                        }) { Text("提醒时间：${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(reminderAt))}") }
-                        Text("提前提醒（默认为准时提醒）", color = TodoDialogMuted, fontSize = 13.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TodoReminderNumber("天", days, 999) { days = it }
-                            TodoReminderNumber("时", hours, 23) { hours = it }
-                            TodoReminderNumber("分", minutes, 59) { minutes = it }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (summary.isNotBlank()) onSave(summary.trim(), dueDate, reminderAt.takeIf { dueDate != null && reminderEnabled }, days.toIntOrNull() ?: 0, hours.toIntOrNull() ?: 0, minutes.toIntOrNull() ?: 0, tasks.toList())
-            }) { Text(if (board == null) "创建" else "保存") }
-        },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } }
-    )
-    if (showDatePicker) TodoDeadlinePicker(
-        initialDate = dueDate ?: System.currentTimeMillis(),
-        onDismiss = { showDatePicker = false },
-        onConfirm = { selected ->
-            val oldTime = Calendar.getInstance().apply { timeInMillis = reminderAt }
-            val newTime = Calendar.getInstance().apply { timeInMillis = selected }
-            newTime.set(Calendar.HOUR_OF_DAY, oldTime.get(Calendar.HOUR_OF_DAY))
-            newTime.set(Calendar.MINUTE, oldTime.get(Calendar.MINUTE))
-            reminderAt = newTime.timeInMillis
-            dueDate = selected
-            showDatePicker = false
-        }
-    )
-}
-
-@Composable
-private fun TodoReminderNumber(label: String, value: String, maximum: Int, onChange: (String) -> Unit) {
-    OutlinedTextField(value = value, onValueChange = { raw ->
-        val digits = raw.filter(Char::isDigit)
-        val number = digits.toIntOrNull()
-        onChange(when { digits.isEmpty() -> ""; number == null -> ""; number > maximum -> maximum.toString(); else -> digits })
-    }, label = { Text(label) }, placeholder = { Text("0") }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(82.dp), singleLine = true)
+    QuickTodoCreateDialog(board = board, onDismiss = onDismiss) { summary, tasks, due, reminder, timeMode ->
+        onSave(summary, due, reminder?.let { reminderDisplayTime(it, due) }, 0, 0, 0, tasks, timeMode, reminder)
+    }
 }
 
 @Composable
@@ -236,7 +155,7 @@ internal fun calendarAnnotation(day: LocalDate): String {
     return if (lunarDay == 1) "${monthNames.getOrElse(lunarMonth) { "?" }}月" else dayNames.getOrElse(lunarDay - 1) { "" }
 }
 
-internal fun formatDeadlineDateTime(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
+internal fun formatDeadlineDateTime(time: Long): String = dateText(time, true)
 
 internal fun formatDeadlineDate(time: Long): String {
     val calendar = Calendar.getInstance().apply { timeInMillis = time }

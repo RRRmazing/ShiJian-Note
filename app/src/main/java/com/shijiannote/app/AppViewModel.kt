@@ -94,8 +94,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         dao.archiveExpiredTodoBoards(now)
     }
 
-    fun addTodo(summary: String, dueDate: Long?, tasks: List<String>, reminderAt: Long? = null, reminderDays: Int = 0, reminderHours: Int = 0, reminderMinutes: Int = 0, reminderRule: String? = null, reminderBaseAt: Long? = null, reminderCustomDays: Int = 0, afterInsert: ((TodoBoard) -> Unit)? = null) = viewModelScope.launch {
-        val board = TodoBoard(summary = summary.trim().ifBlank { "未命名清单" }, dueDate = dueDate, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderRule = reminderRule, reminderBaseAt = reminderBaseAt, reminderCustomDays = reminderCustomDays, position = dao.nextTodoBoardPosition())
+    fun addTodo(summary: String, dueDate: Long?, tasks: List<String>, reminderAt: Long? = null, reminderDays: Int = 0, reminderHours: Int = 0, reminderMinutes: Int = 0, reminderRule: String? = null, reminderBaseAt: Long? = null, reminderCustomDays: Int = 0, timeMode: String = "UNIFIED", afterInsert: ((TodoBoard) -> Unit)? = null) = viewModelScope.launch {
+        val board = TodoBoard(summary = summary.trim().ifBlank { "未命名清单" }, dueDate = dueDate, reminderAt = reminderAt, reminderDays = reminderDays, reminderHours = reminderHours, reminderMinutes = reminderMinutes, reminderRule = reminderRule, reminderBaseAt = reminderBaseAt, reminderCustomDays = reminderCustomDays, position = dao.nextTodoBoardPosition(), timeMode = timeMode)
         val boardId = dao.insertTodoBoard(board)
         dao.insertTodoItems(tasks.filter { it.isNotBlank() }.mapIndexed { index, text ->
             TodoItem(boardId = boardId, text = text.trim(), position = index)

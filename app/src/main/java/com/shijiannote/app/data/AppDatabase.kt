@@ -8,8 +8,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [ScheduleEvent::class, TodoBoard::class, TodoItem::class, DailyTodoPreferences::class, DiaryEntry::class, MemoryCategory::class, MemoryEntry::class, NoteNode::class, NoteVersion::class],
-    version = 10,
+    entities = [ScheduleEvent::class, TodoBoard::class, TodoItem::class, DailyTodoPreferences::class, DiaryEntry::class, MemoryCategory::class, MemoryEntry::class, NoteNode::class, NoteVersion::class, LegacyTodoAlarm::class],
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -110,9 +110,46 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val migration10To11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN forceChildren INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE schedule_events ADD COLUMN important INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val migration11To12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE TABLE IF NOT EXISTS legacy_todo_alarms (kind TEXT NOT NULL, legacyId INTEGER NOT NULL, PRIMARY KEY(kind, legacyId))")
+                database.execSQL("INSERT OR IGNORE INTO legacy_todo_alarms SELECT 'board', id FROM todo_boards")
+                database.execSQL("INSERT OR IGNORE INTO legacy_todo_alarms SELECT 'item', id FROM todo_items")
+                database.execSQL("DELETE FROM todo_items")
+                database.execSQL("DELETE FROM todo_boards")
+                database.execSQL("DELETE FROM daily_todo_preferences")
+                database.execSQL("ALTER TABLE todo_boards ADD COLUMN timeMode TEXT NOT NULL DEFAULT 'UNIFIED'")
+                database.execSQL("ALTER TABLE todo_boards ADD COLUMN reminderSkipAt INTEGER")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN reminderRule TEXT")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN reminderBaseAt INTEGER")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN reminderCustomDays INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE todo_items ADD COLUMN reminderSkipAt INTEGER")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "shijian_note.db")
-                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9, migration9To10)
+            val app = context.applicationContext
+            instance ?: Room.databaseBuilder(app, AppDatabase::class.java, "shijian_note.db")
+                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9, migration9To10, migration10To11, migration11To12)
+                .addCallback(object : Callback() {
+                    override fun onOpen(db: SupportSQLiteDatabase) {
+                        db.query("SELECT kind, legacyId FROM legacy_todo_alarms").use { rows ->
+                            while (rows.moveToNext()) {
+                                val id = rows.getLong(1)
+                                if (rows.getString(0) == "board") com.shijiannote.app.ReminderScheduler.cancelTodoBoard(app, id)
+                                else com.shijiannote.app.ReminderScheduler.cancelTodo(app, id)
+                            }
+                        }
+                        db.execSQL("DELETE FROM legacy_todo_alarms")
+                    }
+                })
                 .build()
                 .also { instance = it }
         }

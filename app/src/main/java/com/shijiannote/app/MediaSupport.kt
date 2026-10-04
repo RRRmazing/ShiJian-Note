@@ -13,6 +13,19 @@ import java.io.File
 import java.util.UUID
 
 data class MediaInfo(val name: String, val size: Long, val mime: String)
+data class ImageFailure(val nodeId: String, val blockId: String, val path: String, val name: String, val uri: String, val reason: String)
+
+/** Retrofitting a copy preserves block identity, formatting and display overrides. */
+suspend fun copyImage(context: Context, block: NoteBlock): NoteBlock = withContext(Dispatchers.IO) {
+    val ext = block.text.substringAfterLast('.', "img").take(10).filter(Char::isLetterOrDigit).ifBlank { "img" }
+    val file = File(File(context.filesDir, "assets").apply { mkdirs() }, "${UUID.randomUUID()}.$ext")
+    try {
+        context.contentResolver.openInputStream(Uri.parse(block.uri))?.use { input -> file.outputStream().use { input.copyTo(it) } }
+            ?: error("原图片不存在或访问权限已失效")
+        require(file.length() > 0) { "原图片为空，无法保存副本" }
+        block.copy(uri = Uri.fromFile(file).toString(), owned = true, bytes = file.length())
+    } catch (e: Exception) { file.delete(); throw e }
+}
 fun mediaInfo(context: Context, uri: Uri): MediaInfo {
     var name = "附件"
     var size = 0L

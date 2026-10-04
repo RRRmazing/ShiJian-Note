@@ -44,8 +44,8 @@ val Quiet = Color(0xFF718095)
 @Composable fun SoftCard(modifier: Modifier = Modifier, color: Color = Color.White, content: @Composable ColumnScope.() -> Unit) {
     Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = color) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content) }
 }
-@Composable fun SoftDialog(title: String, onClose: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+@Composable fun SoftDialog(title: String, onClose: () -> Unit, dismissOnBackPress: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = dismissOnBackPress)) {
         Surface(Modifier.fillMaxWidth().padding(20.dp).imePadding(), shape = RoundedCornerShape(28.dp), color = Color.White) {
             Column(Modifier.padding(22.dp).heightIn(max = 580.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(title, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
@@ -59,7 +59,44 @@ val Quiet = Color(0xFF718095)
         options.forEach { (key, text) -> FilterChip(selected = value == key, onClick = { onChange(key) }, label = { Text(text) }) }
     } }
 }
-fun dateText(time: Long, withTime: Boolean = false): String = SimpleDateFormat(if (withTime) "yyyy年M月d日 HH:mm" else "yyyy年M月d日", Locale.CHINA).format(Date(time))
+@Composable fun ConfirmTrashDialog(message: String, onCancel: () -> Unit, onDelete: () -> Unit, enabled: Boolean = true) {
+    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth().padding(20.dp).navigationBarsPadding(), shape = RoundedCornerShape(28.dp), color = Color.White) {
+            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(message, fontSize = 17.sp, lineHeight = 26.sp, fontWeight = FontWeight.Normal)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("取消") }
+                    Button(onClick = onDelete, enabled = enabled, modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("删除") }
+                }
+            }
+        }
+    }
+}
+fun trashSummary(folders: Int, records: Int, showFolders: Boolean = true): String =
+    if (showFolders) "将这${folders}个分类，${records}条记录移到回收站" else "将这${records}条记录移到回收站"
+
+@Composable fun NoteSelectionActions(count: Int, allSelected: Boolean, canSelectAll: Boolean,
+    onAll: () -> Unit, onCancel: () -> Unit, onExport: (() -> Unit)? = null, onMove: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("已选$count", color = Quiet, modifier = Modifier.weight(1f))
+            FilterChip(allSelected, onAll, enabled = canSelectAll, label = { Text("全选") })
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            onMove?.let { TextButton(onClick = it, enabled = count > 0) { Text("移动到") } }
+            onExport?.let { TextButton(onClick = it, enabled = count > 0) { Text("导出") } }
+            TextButton(onClick = onCancel) { Text("取消") }
+            onDelete?.let { TextButton(onClick = it, enabled = count > 0,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("删除") } }
+        }
+    }
+}
+fun dateText(time: Long, withTime: Boolean = false): String {
+    val date = java.time.Instant.ofEpochMilli(time).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    val currentYear = date.year == java.time.LocalDate.now().year
+    return (if (currentYear) "今年" else "") + SimpleDateFormat(if (withTime) { if (currentYear) "M月d日 HH:mm" else "yyyy年M月d日 HH:mm" } else { if (currentYear) "M月d日" else "yyyy年M月d日" }, Locale.CHINA).format(Date(time))
+}
 fun appPreferences(context: Context) = context.getSharedPreferences("general", Context.MODE_PRIVATE)
 fun imageDisplayDefault(context: Context) = appPreferences(context).getString("imageDisplay", "preview")!!
 fun imageStorageDefault(context: Context) = appPreferences(context).getString("imageStorage", "copy")!!
