@@ -151,11 +151,15 @@ private val Ink = Color(0xFF283449)
 private val Muted = Color(0xFF718095)
 
 class MainActivity : ComponentActivity() {
+    var mediaProblemRequest by mutableStateOf<String?>(null)
+        private set
     var diaryRecallRequest by mutableStateOf<String?>(null)
         private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        mediaProblemRequest = savedInstanceState?.getString("mediaProblemRequest")
+        MediaResourceHealth.initialize(this)
         diaryRecallRequest = savedInstanceState?.getString("diaryRecallRequest")
         receiveDiaryRecall(intent)
         DiaryRecallReminder.initialize(this)
@@ -170,6 +174,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("mediaProblemRequest", mediaProblemRequest)
         outState.putString("diaryRecallRequest", diaryRecallRequest)
         super.onSaveInstanceState(outState)
     }
@@ -180,6 +185,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun receiveDiaryRecall(intent: Intent?) {
+        if (intent?.action == MediaResourceHealth.ACTION_OPEN) {
+            mediaProblemRequest = java.util.UUID.randomUUID().toString(); intent.action = Intent.ACTION_MAIN
+        }
         if (intent?.action == DiaryRecallReminder.ACTION_OPEN_RECALL) {
             // Requests must stay distinct even if the Activity was recreated since the last tap.
             diaryRecallRequest = java.util.UUID.randomUUID().toString()

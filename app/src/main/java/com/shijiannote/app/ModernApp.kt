@@ -85,6 +85,12 @@ import org.json.JSONObject
     var failurePage by rememberSaveable { mutableStateOf(false) }
     val imageBusy by model.imageBusy.collectAsState()
     val imageFailures by model.imageFailures.collectAsState()
+    MediaResourceHealth.initialize(context)
+    val mediaIssues by MediaResourceHealth.issues.collectAsState()
+    var problems by rememberSaveable { mutableStateOf(false) }
+    var referenced by rememberSaveable { mutableStateOf(false) }
+    var focusedBlock by rememberSaveable { mutableStateOf<String?>(null) }
+    var focusedInbox by rememberSaveable { mutableStateOf<String?>(null) }
     var general by rememberSaveable { mutableStateOf(false) }
     var trash by rememberSaveable { mutableStateOf(false) }
     var advanced by rememberSaveable { mutableStateOf(false) }
@@ -132,6 +138,22 @@ import org.json.JSONObject
         }
         if (note.kind == "diary" && (note.diaryRoadEnabled || note.diaryMoments().isNotEmpty() || !note.hasDiaryContent() && note.diaryInboxItems().isNotEmpty())) openRoad(note, query)
         else openSummary(note, new, query, fromRoad = roadSnapshot != null)
+    }
+    fun openMediaLocation(location: MediaLocation) {
+        scope.launch {
+            runCatching {
+                model.flushAll()
+                val node = model.notes.node(location.nodeId)?.takeIf { it.deletedAt == null } ?: error("原记录已经删除，请刷新问题日志")
+                editorStack.clear(); roadSnapshot = null; diaryInboxOpen = false
+                focusedBlock = location.blockId
+                if (location.inboxId != null) {
+                    editorSnapshot = null; diaryInboxDay = node.day; focusedInbox = location.inboxId; diaryInboxOpen = true
+                } else if (location.momentId != null) {
+                    val moment = node.diaryMoments().firstOrNull { it.id == location.momentId } ?: error("原片段已经变化，请刷新问题日志")
+                    openSummary(moment.asNote(node)); focusedBlock = location.blockId
+                } else { openSummary(node); focusedBlock = location.blockId }
+            }.onFailure { snackbar.showSnackbar(it.message ?: "无法定位原内容") }
+        }
     }
     fun restorePreviousEditor() {
         val page = JSONObject(editorStack.removeAt(editorStack.lastIndex))
@@ -204,6 +226,19 @@ import org.json.JSONObject
     LaunchedEffect(Unit) {
         model.messages.collect { snackbar.showSnackbar(it) }
     }
+    val mediaRequest = (context as? MainActivity)?.mediaProblemRequest
+    var handledMediaRequest by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(mediaRequest) {
+        if (mediaRequest != null && mediaRequest != handledMediaRequest) {
+            handledMediaRequest = mediaRequest; tab = 4; problems = true; referenced = false
+            editorSnapshot = null; roadSnapshot = null; roadPreviewSnapshot = null; diaryInboxOpen = false
+            search = false; structure = false; general = false; trash = false; advanced = false; about = false
+        }
+    }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        val job = scope.launch { runCatching { MediaResourceHealth.scan(context, model) } }
+        onPauseOrDispose { job.cancel() }
+    }
     val recallRequest = (context as? MainActivity)?.diaryRecallRequest
     LaunchedEffect(recallRequest) {
         if (recallRequest != null && recallRequest != handledRecallRequest) {
@@ -232,18 +267,18 @@ import org.json.JSONObject
             delay(60_000)
         }
     }
-    BackHandler(enabled = editor == null && road == null && (addMemory || general || trash || advanced || about || importDestination != null)) {
-        when { addMemory -> addMemory = false; importDestination != null -> importDestination = null; general -> general = false; trash -> trash = false; about -> about = false; else -> advanced = false }
+    BackHandler(enabled = editor == null && road == null && (addMemory || problems || referenced || general || trash || advanced || about || importDestination != null)) {
+        when { problems -> problems = false; referenced -> referenced = false; addMemory -> addMemory = false; importDestination != null -> importDestination = null; general -> general = false; trash -> trash = false; about -> about = false; else -> advanced = false }
     }
     YouthTheme {
         val fullDiaryPage = road != null || roadPreview != null || diaryInboxOpen || editor?.kind in setOf("diary", "diary_moment")
         Scaffold(containerColor = Mist, contentWindowInsets = if (fullDiaryPage) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
             snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
-            if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
+            if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !problems && !referenced && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 val labels = listOf("时间表", "待办", "日记", "记忆", "设置")
                 val icons = listOf(Icons.Default.CalendarMonth, Icons.Default.CheckCircleOutline, Icons.Default.MenuBook, Icons.Default.FolderOpen, Icons.Default.Settings)
                 val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
-                labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index, onClick = { if (index == 3 || tab == 3) { parent = null; memoryVisit++ }; tab = index; selecting = false; addMemory = false }, icon = { Icon(icons[index], label) }, label = { Text(if (compact && index == 0) "日程" else label, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }) }
+                labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index, onClick = { if (index == 3 || tab == 3) { parent = null; memoryVisit++ }; tab = index; selecting = false; addMemory = false }, icon = { BadgedBox(badge = { if (index == 4 && mediaIssues.isNotEmpty()) Badge { Text(mediaIssues.size.toString()) } }) { Icon(icons[index], label) } }, label = { Text(if (compact && index == 0) "日程" else label, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }) }
             }
         }) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
@@ -260,12 +295,12 @@ import org.json.JSONObject
                 else if (editor != null && !diaryInboxOpen) libraryState.SaveableStateProvider("editor-${editor.id}") { RichNoteEditor(editor, model, editingNew, reveal,
                     onBack = {
                         if (road != null && (editor.id == road.id || (editor.kind == "diary_moment" && editor.parentId == road.id))) {
-                            editorSnapshot = null; reveal = ""
+                            editorSnapshot = null; reveal = ""; focusedBlock = null
                             val current = model.currentDiary(road.day ?: dayMillis())
                             if (road.day != dayMillis() && !current.diaryRoadEnabled && current.diaryMoments().isEmpty()) roadSnapshot = null
                         } else if (editorStack.isEmpty()) {
                             if (structure && structureSearchSnapshot == null && editor.id == structureEntry) treeReturnChoice = true
-                            else { editorSnapshot = null; reveal = "" }
+                            else { editorSnapshot = null; reveal = ""; focusedBlock = null }
                         }
                         else restorePreviousEditor()
                     },
@@ -280,10 +315,10 @@ import org.json.JSONObject
                     } }, onExport = ::export,
                     onDiaryRoad = { note -> openRoad(model.currentDiary(note.day ?: dayMillis())) },
                     onMomentPosition = { moment -> roadPreviewSnapshot = jsonObject(moment).toString() },
-                    onDiaryInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true }) }
+                    onDiaryInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true }, focusBlockId = focusedBlock) }
                 else if (diaryInboxOpen) DiaryInboxScreen(model, diaryInboxDay,
-                    onBack = { diaryInboxOpen = false },
-                    onEdit = { draft -> editorStack.clear(); openMoment(draft) })
+                    onBack = { diaryInboxOpen = false; focusedInbox = null; focusedBlock = null },
+                    onEdit = { draft -> editorStack.clear(); openMoment(draft) }, focusItemId = focusedInbox, focusBlockId = focusedBlock)
                 else if (road != null) libraryState.SaveableStateProvider("diary-road-${road.id}") {
                     DiaryRoadScreen(road, model,
                         onBack = { if (editorStack.isNotEmpty()) restorePreviousEditor() else { roadSnapshot = null; reveal = "" } },
@@ -294,6 +329,8 @@ import org.json.JSONObject
                         onResumeConsumed = { roadResumeSnapshot = null })
                 }
                 else when {
+                    problems -> MediaProblemsScreen(model, { problems = false }, ::openMediaLocation)
+                    referenced -> ReferencedMediaScreen(model, { referenced = false }, ::openMediaLocation)
                     failurePage -> ImageFailuresScreen(model, { failurePage = false }, { open(it, true) })
                     structure && structureSearchSnapshot == null && structureFolder -> libraryState.SaveableStateProvider("structure-folder-$structureRoot-$structureFolderParent") {
                         MemoryLibrary(model, structureFolderParent, { destination ->
@@ -346,7 +383,7 @@ import org.json.JSONObject
                             }
                         }
                     }
-                    else -> SettingsHome({ general = true }, { trash = true }, { backup = true }, { advanced = true }, { about = true }, { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))) })
+                    else -> SettingsHome({ general = true }, { trash = true }, { backup = true }, { advanced = true }, { about = true }, { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))) }, problems = { problems = true }, problemCount = mediaIssues.size, referenced = { referenced = true })
                 }
                 if (editor == null && record.running) Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(16.dp), color = Peach) {
                     TextButton(onClick = { scope.launch {
@@ -364,7 +401,7 @@ import org.json.JSONObject
                         } else model.notes.node(record.owner)?.let { open(it, true) }
                     } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
                 }
-                if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && tab < 4 && tab != 2 && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
+                if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && tab < 4 && tab != 2 && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !problems && !referenced && !general && !trash && !advanced && !about && importDestination == null) {
                     if (addMemory && tab == 3) {
                         BackHandler { addMemory = false }
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable { addMemory = false })

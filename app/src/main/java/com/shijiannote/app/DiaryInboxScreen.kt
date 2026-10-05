@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEdit: (NoteNode) -> Unit) {
+fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEdit: (NoteNode) -> Unit, focusItemId: String? = null, focusBlockId: String? = null) {
     val nodes by model.nodes.collectAsState()
     val revision by model.diaryRevision.collectAsState()
     val entries = remember(nodes, revision, day) {
@@ -31,6 +31,7 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
     var retention by remember { mutableStateOf(false) }
     var permanent by remember { mutableStateOf<Pair<NoteNode, DiaryInboxItem>?>(null) }
     var preview by remember { mutableStateOf<Pair<NoteNode, DiaryInboxItem>?>(null) }
+    LaunchedEffect(focusItemId, entries) { if (focusItemId != null) preview = entries.firstOrNull { it.second.id == focusItemId } }
     var busy by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -82,7 +83,7 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
                             Text(DiaryLibraryRules.momentPreview(moment), maxLines = 5, overflow = TextOverflow.Ellipsis)
                             DiaryMomentTagsPreview(moment.tags)
                             val blocks = runCatching { decodeBlocks(moment.document, moment.text) }.getOrDefault(emptyList())
-                            val mediaCount = blocks.count { it.type in setOf("image", "audio", "file", "link") }
+                            val mediaCount = blocks.count { it.type in setOf("image", "video", "audio", "file", "link") }
                             if (mediaCount > 0) Text("包含 $mediaCount 项素材 · 编辑可查看完整顺序", color = Quiet, fontSize = 12.sp)
                             Text("发生：${moment.occurredAt?.let { diaryTimestamp(it) } ?: "跟随发送时间"}", color = Quiet, fontSize = 12.sp)
                             moment.sentAt?.let { Text("原发送：${diaryTimestamp(it)}", color = Quiet, fontSize = 12.sp) }
@@ -113,14 +114,14 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
             dismissButton = { TextButton(onClick = { permanent = null }) { Text("取消") } })
     }
     preview?.let { (parent, item) ->
-        SoftDialog("收纳的小路 · ${dateText(parent.day ?: parent.createdAt)}", { preview = null }) {
-            val moments = runCatching { parent.copy(diaryRoad = item.road).diaryMoments() }.getOrDefault(emptyList())
+        SoftDialog("收纳内容 · ${dateText(parent.day ?: parent.createdAt)}", { preview = null }) {
+            val moments = item.moment?.let { listOf(it) } ?: runCatching { parent.copy(diaryRoad = item.road).diaryMoments() }.getOrDefault(emptyList())
             moments.forEach { moment ->
                 Text(diaryTimestamp(moment.occurredAt ?: moment.sentAt ?: moment.createdAt), color = Quiet, fontSize = 12.sp)
-                DiaryMomentContentPreview(moment, parent, nodes, { }, { error = it })
+                DiaryMomentContentPreview(moment, parent, nodes, { }, { error = it }, maxBlocks = Int.MAX_VALUE, focusBlockId = focusBlockId)
                 HorizontalDivider()
             }
-            Button(onClick = { act { model.restoreDiaryInbox(parent, item.id); preview = null } }, modifier = Modifier.fillMaxWidth()) { Text(if (parent.diaryRoadEnabled || parent.diaryMoments().isNotEmpty()) "合并到现有小路" else "恢复小路") }
+            Button(onClick = { act { model.restoreDiaryInbox(parent, item.id); preview = null } }, modifier = Modifier.fillMaxWidth()) { Text(if (item.moment != null) "恢复片段" else if (parent.diaryRoadEnabled || parent.diaryMoments().isNotEmpty()) "合并到现有小路" else "恢复小路") }
         }
     }
     if (retention) DiaryRetentionDialog(model) { retention = false }

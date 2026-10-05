@@ -417,6 +417,11 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                 onAll = { selected = if (selected.containsAll(selectableIds)) emptySet() else selectableIds },
                 onCancel = { selected = emptySet(); selectionMode = "" },
                 onExport = null,
+                onFavorite = if (selectionMode == "manage") ({
+                    model.setDiaryFavorites(selected, !(favorites && !pastPage))
+                    selected = emptySet(); selectionMode = ""
+                }) else null,
+                favoriteLabel = if (favorites && !pastPage) "取消收藏" else "收藏",
                 onDelete = if (selectionMode == "manage") ({ onTrash(selected) }) else null)
         }
         if (showTodayEntrances) {
@@ -468,6 +473,12 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
         }
     }
     if (settings) SoftDialog("日记设置", { settings = false }) {
+        var allowCapture by remember { mutableStateOf(appPreferences(context).getBoolean("diaryAllowCapture", false)) }
+        Row(Modifier.fillMaxWidth().toggleable(value = allowCapture, role = androidx.compose.ui.semantics.Role.Checkbox,
+            onValueChange = { allowCapture = it; appPreferences(context).edit().putBoolean("diaryAllowCapture", it).apply() }), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(allowCapture, null)
+            Text("允许编写日记时选择“拍摄照片或视频”", Modifier.weight(1f))
+        }
         OutlinedButton(onClick = { settings = false; selected = emptySet(); selectionMode = "export" }, modifier = Modifier.fillMaxWidth()) { Text("导出日记") }
         Text("先选择日期，再统一选择小路、日记与阅读格式。", color = Quiet, fontSize = 12.sp)
         Row(Modifier.fillMaxWidth().toggleable(value = reminderEnabled, role = androidx.compose.ui.semantics.Role.Checkbox,

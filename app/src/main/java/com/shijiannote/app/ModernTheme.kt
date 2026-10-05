@@ -6,11 +6,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -82,7 +86,8 @@ fun trashSummary(folders: Int, records: Int, showFolders: Boolean = true): Strin
     if (showFolders) "将这${folders}个分类，${records}条记录移到回收站" else "将这${records}条记录移到回收站"
 
 @Composable fun NoteSelectionActions(count: Int, allSelected: Boolean, canSelectAll: Boolean,
-    onAll: () -> Unit, onCancel: () -> Unit, onExport: (() -> Unit)? = null, onMove: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
+    onAll: () -> Unit, onCancel: () -> Unit, onExport: (() -> Unit)? = null, onMove: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
+    onFavorite: (() -> Unit)? = null, favoriteLabel: String = "收藏") {
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("已选$count", color = Quiet, modifier = Modifier.weight(1f))
@@ -91,10 +96,21 @@ fun trashSummary(folders: Int, records: Int, showFolders: Boolean = true): Strin
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             onMove?.let { TextButton(onClick = it, enabled = count > 0) { Text("移动到") } }
             onExport?.let { TextButton(onClick = it, enabled = count > 0) { Text("导出") } }
+            onFavorite?.let { TextButton(onClick = it, enabled = count > 0) { Text(favoriteLabel) } }
             TextButton(onClick = onCancel) { Text("取消") }
             onDelete?.let { TextButton(onClick = it, enabled = count > 0,
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("删除") } }
         }
+    }
+}
+@Composable fun DiaryFavoriteButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier,
+    enabled: Boolean = true) {
+    IconButton(onClick = onClick, enabled = enabled,
+        modifier = modifier.size(36.dp).semantics { stateDescription = if (favorite) "已收藏" else "未收藏" }) {
+        Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            if (favorite) "取消收藏日记" else "收藏日记",
+            tint = if (favorite) Color(0xFFE04B5A) else LocalContentColor.current,
+            modifier = Modifier.size(21.dp))
     }
 }
 fun dateText(time: Long, withTime: Boolean = false): String {
@@ -104,4 +120,4 @@ fun dateText(time: Long, withTime: Boolean = false): String {
 }
 fun appPreferences(context: Context) = context.getSharedPreferences("general", Context.MODE_PRIVATE)
 fun imageDisplayDefault(context: Context) = appPreferences(context).getString("imageDisplay", "preview")!!
-fun imageStorageDefault(context: Context) = appPreferences(context).getString("imageStorage", "copy")!!
+fun imageStorageDefault(context: Context) = appPreferences(context).getString("imageStorage", "reference")!!

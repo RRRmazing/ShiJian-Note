@@ -94,7 +94,7 @@ object ExportEngine {
                     if (path != null) append("[${escape(name)}](<${relative(documentPath, path)}>)\n\n")
                     else append("关联记录：${escape(name)}（${target?.let { TreeRules.path(it, all) } ?: "原记录已删除"}；未包含在本次导出范围）\n\n")
                 }
-                "image", "audio", "file" -> {
+                "image", "video", "audio", "file" -> {
                     val path = assets[b.uri]
                     if (path != null) append("${if (b.type == "image") "!" else ""}[$text](<${relative(documentPath, path)}>)${if (b.type == "audio") " · ${audioTime(b.duration)}" else ""}\n\n")
                     else append("${if (b.type == "image") "图片" else if (b.type == "audio") "录音" else "附件"}：$text（${if (b.owned) "素材不可读取" else "仅保留外部引用"}）\n\n原引用：`${b.uri}`\n\n")
@@ -321,6 +321,7 @@ object ExportEngine {
             val saved = savedPreferences
             saved.keys().forEach { key -> when (val value = saved.get(key)) { is Boolean -> pref.putBoolean(key, value); is Int -> pref.putInt(key, value); is Long -> pref.putLong(key, value); is String -> pref.putString(key, value) } }
             pref.commit()
+            MediaResourceHealth.workspaceRestored(context)
             context.getSharedPreferences("recording_inbox", Context.MODE_PRIVATE).edit().putString("items", savedRecordings.toString()).commit()
             // Cancel previous reminders; only reschedule active future reminders from the imported data.
             oldSchedules.forEach { ReminderScheduler.cancel(context, it.id) }

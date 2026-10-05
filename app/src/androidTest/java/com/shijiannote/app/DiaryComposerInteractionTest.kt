@@ -124,7 +124,7 @@ class DiaryComposerInteractionTest {
         try {
             rule.activity.setContent { YouthTheme { DiaryRoadScreen(note, model, {}, {}, { _, _ -> }) } }
             rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
-            listOf("键盘", "语音", "发生时间", "新增标签", "暂存", "添加素材", "发送片段").forEach {
+            listOf("键盘", "语音", "发生时间", "暂存", "添加素材", "发送片段").forEach {
                 rule.onNodeWithContentDescription(it).assertExists()
             }
             rule.onNodeWithContentDescription("键盘").performClick()

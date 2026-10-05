@@ -162,7 +162,7 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         val next = if (node.kind == "diary") {
             val current = findDiary(node.day ?: error("日记缺少所属日期"))
             if (current == null) node.copy(id = if ((nodes.value + diarySnapshots.values).any { it.id == node.id && it.deletedAt != null }) UUID.randomUUID().toString() else node.id)
-            else node.copy(id = current.id, diaryRoad = current.diaryRoad, diaryRoadTheme = current.diaryRoadTheme,
+            else node.copy(id = current.id, favorite = current.favorite, diaryRoad = current.diaryRoad, diaryRoadTheme = current.diaryRoadTheme,
                 diaryRoadBackground = current.diaryRoadBackground, diaryRoadEnabled = current.diaryRoadEnabled, diaryRoadLayout = current.diaryRoadLayout,
                 diaryInbox = current.diaryInbox, diaryTrashExpiresAt = current.diaryTrashExpiresAt, createdAt = current.createdAt)
         } else if (node.kind == "memory") node.flattenDiaryRoad() else node
@@ -179,6 +179,31 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
     }
     private fun enqueueDiary(node: NoteNode) {
         enqueue(node) // Empty date state and inbox are durable; the library hides dates with no published content.
+    }
+    /** Favorite belongs to the dated diary, independently of summary edits and road drafts. */
+    @Synchronized fun toggleDiaryFavorite(parent: NoteNode) {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再收藏" }
+        require(parent.kind == "diary")
+        val current = diaryParent(parent)
+        enqueueDiary(current.copy(favorite = !current.favorite))
+    }
+    @Synchronized fun setDiaryFavorites(ids: Set<String>, favorite: Boolean) {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再收藏" }
+        (nodes.value + diarySnapshots.values + pending.values).filter { it.id in ids }
+            .groupBy { it.id }.values.map { versions -> versions.maxBy { it.updatedAt } }
+            .filter { it.kind == "diary" && it.deletedAt == null && it.favorite != favorite }
+            .forEach { enqueueDiary(it.copy(favorite = favorite)) }
+    }
+    @Synchronized fun rebindResource(source: NoteNode, location: MediaLocation, expectedUri: String, replacement: NoteBlock) {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后重新绑定" }
+        val current = if (source.kind == "diary") findDiary(source.day ?: error("日记缺少日期"))
+            else pending[source.id] ?: nodes.value.firstOrNull { it.id == source.id }
+        val latest = current ?: source
+        check(latest.deletedAt == null) { "原记录已经删除" }
+        check(mediaReferenceIndex(listOf(latest)).any { reference -> reference.block.uri == expectedUri && reference.locations.any {
+            it.blockId == location.blockId && it.momentId == location.momentId && it.inboxId == location.inboxId
+        } }) { "原素材已经变化，请重新检查后绑定" }
+        enqueue(replaceResourceAtLocation(latest, location, replacement))
     }
     private fun findDiary(day: Long): NoteNode? {
         val normalized = dayMillis(java.time.Instant.ofEpochMilli(day).atZone(ZoneId.systemDefault()).toLocalDate())
@@ -218,6 +243,23 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems() + item)))
         momentParents["moment-$key"] = current.id
         return original.asNote(current)
+    }
+    /** Opening an editor creates a durable edit identity; closing unchanged removes only that identity. */
+    @Synchronized fun cancelUnchangedDiaryMomentEdit(parent: NoteNode, moment: DiaryMoment): Boolean {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再返回" }
+        val current = diaryParent(parent)
+        val original = current.diaryMoments().firstOrNull { it.id == moment.id } ?: return false
+        val edit = current.diaryInboxItems().firstOrNull {
+            it.status == "draft" && it.originalStatus == "editing" && it.moment?.id == moment.id
+        }
+        val baseline = edit?.originalMoment?.takeIf { it.isNotBlank() }?.let { decodeDiaryMoment(JSONObject(it)) } ?: original
+        if (!sameDiaryMomentEditContent(moment, baseline) || !sameDiaryMomentState(original, baseline) ||
+            edit?.moment?.let { !sameDiaryMomentEditContent(it, baseline) } == true) return false
+        val owner = edit?.recordingOwner?.takeIf { it.isNotBlank() } ?: "moment-${moment.id}"
+        val recording = RecordingService.state.value
+        if (recording.running && recording.owner == owner || RecordingService.inbox(getApplication(), owner).isNotEmpty()) return false
+        if (edit != null) enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().filterNot { it.id == edit.id })))
+        return true
     }
     @Synchronized fun saveDiaryMomentEdit(parent: NoteNode, moment: DiaryMoment): DiaryInboxItem {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
@@ -479,11 +521,11 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         enqueueDiary(current.copy(diaryRoadTheme = theme, diaryRoadBackground = background))
     }
     fun updateDiaryRoadSettings(parent: NoteNode, theme: String, background: String) = updateDiaryRoadAppearance(parent, theme, background)
-    /** Explicit whole-record restoration; regular summary saves intentionally preserve the latest road. */
+    /** Restore content while keeping the current favorite and retained inbox items. */
     @Synchronized fun restoreDiarySnapshot(snapshot: NoteNode) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
         val current = currentDiary(snapshot.day ?: error("日记缺少所属日期"))
-        val restored = snapshot.copy(id = current.id, createdAt = current.createdAt,
+        val restored = snapshot.copy(id = current.id, createdAt = current.createdAt, favorite = current.favorite,
             diaryInbox = encodeDiaryInbox(mergeDiaryInboxPreservingConflicts(current.diaryInboxItems(), snapshot.diaryInboxItems())))
         val conflicts = restored.diaryInboxItems().filter { item -> item.originalStatus == "editing" && item.moment != null &&
             restored.diaryMoments().firstOrNull { it.id == item.moment.id }?.let { original ->

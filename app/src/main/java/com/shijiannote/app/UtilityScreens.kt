@@ -22,7 +22,7 @@ import com.shijiannote.app.data.*
 import kotlinx.coroutines.*
 import java.io.File
 
-@Composable fun SettingsHome(general: () -> Unit, trash: () -> Unit, backup: () -> Unit, advanced: () -> Unit, about: () -> Unit, appInfo: () -> Unit) {
+@Composable fun SettingsHome(general: () -> Unit, trash: () -> Unit, backup: () -> Unit, advanced: () -> Unit, about: () -> Unit, appInfo: () -> Unit, problems: () -> Unit = {}, problemCount: Int = 0, referenced: () -> Unit = {}) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp, 10.dp, 24.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { PageTitle("设置", "让时笺适合你的习惯") }
         item { SettingsSection("使用偏好",
@@ -31,6 +31,13 @@ import java.io.File
         item { HorizontalDivider(color = MaterialTheme.colorScheme.outline); Spacer(Modifier.height(18.dp)); SettingsSection("数据管理",
             SettingsEntry("备份与恢复", "保存与还原数据", Icons.Default.Inventory2, backup),
             SettingsEntry("回收站", "找回删除的内容", Icons.Default.DeleteOutline, trash)) }
+        item {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                TextButton(onClick = problems) { BadgedBox(badge = { if (problemCount > 0) Badge { Text(problemCount.toString()) } }) { Text("问题日志") } }
+                TextButton(onClick = referenced) { Text("已引用照片与视频") }
+            }
+        }
         item { HorizontalDivider(color = MaterialTheme.colorScheme.outline); Spacer(Modifier.height(18.dp)); SettingsSection("帮助与系统",
             SettingsEntry("关于与使用说明", "认识时笺", Icons.Default.MenuBook, about),
             SettingsEntry("系统应用设置", "通知与权限", Icons.Default.PhonelinkSetup, appInfo)) }
@@ -120,12 +127,21 @@ internal suspend fun unusedAssets(context: android.content.Context, model: Works
     val prefs = appPreferences(context)
     var display by remember { mutableStateOf(imageDisplayDefault(context)) }
     var storage by remember { mutableStateOf(imageStorageDefault(context)) }
+    var videoStorage by remember { mutableStateOf(prefs.getString("videoStorage", storage)!!) }
+    var imageQuality by remember { mutableStateOf(prefs.getString("imageCopyQuality", "original")!!) }
+    var videoQuality by remember { mutableStateOf(prefs.getString("videoCopyQuality", "original")!!) }
     Column(Modifier.fillMaxSize().padding(18.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         PageTitle("图片显示与保存", back = onBack)
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ChoiceRow("图片默认显示", display, listOf("preview" to "正文预览", "card" to "图片卡片")) { display = it; prefs.edit().putString("imageDisplay", it).apply() }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             ChoiceRow("新插入图片默认保存", storage, listOf("copy" to "保存副本", "reference" to "引用原图")) { storage = it; prefs.edit().putString("imageStorage", it).apply() }
+            ChoiceRow("照片副本默认质量", imageQuality, listOf("original" to "原文件", "high" to "高清", "small" to "节省空间")) { imageQuality = it; prefs.edit().putString("imageCopyQuality", it).apply() }
+            Text("原文件副本保持原始字节。高清照片最长边2560像素、JPEG质量90；节省空间最长边1280像素、JPEG质量80，不放大小图。透明PNG保留透明。动图/WebP使用原文件副本。", fontSize = 12.sp, color = Quiet)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            ChoiceRow("新插入视频默认保存", videoStorage, listOf("reference" to "引用原视频", "copy" to "保存副本")) { videoStorage = it; prefs.edit().putString("videoStorage", it).apply() }
+            ChoiceRow("视频副本默认质量", videoQuality, listOf("original" to "原视频", "1080" to "1080p", "720" to "720p")) { videoQuality = it; prefs.edit().putString("videoCopyQuality", it).apply() }
+            Text("1080p/720p限制短边并保持比例，不放大原视频。压缩使用H.264，目标码率分别8/4Mbps，保留音轨；实际效果由编码器决定。原视频档位不转码。导入时可单独选择本次保存方式与质量。", fontSize = 12.sp, color = Quiet)
             Text("分类、记录和单张图片可设置各自的显示方式；启用分类的强制下级后，统一沿用该分类的设置。", fontSize = 13.sp, color = Quiet)
             Text("默认保存方式影响新插入图片。已有引用图片可在素材设置中保存副本，也可通过分类设置批量补存。", fontSize = 13.sp, color = Quiet)
             Text("引用原图依赖原文件与访问权限；普通文件附件只建立引用。", fontSize = 13.sp, color = Quiet)

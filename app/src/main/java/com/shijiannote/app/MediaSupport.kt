@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
@@ -46,6 +48,7 @@ suspend fun importMedia(context: Context, uri: Uri, image: Boolean, copy: Boolea
         val file = File(File(context.filesDir, "assets").apply { mkdirs() }, "${UUID.randomUUID()}.$ext")
         try {
             context.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } } ?: error("无法读取所选文件")
+            require(file.length() > 0) { "所选文件为空" }
             Uri.fromFile(file)
         } catch (e: Exception) { file.delete(); throw e }
     } else {
@@ -53,17 +56,35 @@ suspend fun importMedia(context: Context, uri: Uri, image: Boolean, copy: Boolea
         catch (e: SecurityException) { error("此来源不能长期引用，请选择本地文件或保存图片副本") }
         uri
     }
-    NoteBlock(type = if (image) "image" else "file", text = info.name, uri = stored.toString(), owned = copy, mime = info.mime, bytes = info.size)
+    NoteBlock(type = if (image) "image" else "file", text = info.name, uri = stored.toString(), owned = copy, mime = info.mime, bytes = if (copy) File(stored.path!!).length() else info.size)
 }
-suspend fun loadImage(context: Context, uri: String, maxPixels: Int = 1600): Bitmap? = withContext(Dispatchers.IO) {
+suspend fun loadImage(context: Context, uri: String, maxPixels: Int = 1600, orient: Boolean = true): Bitmap? = withContext(Dispatchers.IO) {
     runCatching {
         val parsed = Uri.parse(uri)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(parsed)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         var sample = 1
         while (bounds.outWidth / sample > maxPixels || bounds.outHeight / sample > maxPixels) sample *= 2
-        context.contentResolver.openInputStream(parsed)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
+        context.contentResolver.openInputStream(parsed)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }?.let { decoded ->
+            if (!orient) decoded else orientBitmap(context, parsed, decoded).also { if (it !== decoded) decoded.recycle() }
+        }
     }.getOrNull()
+}
+internal fun orientBitmap(context: Context, uri: Uri, decoded: Bitmap): Bitmap {
+    val orientation = runCatching { context.contentResolver.openInputStream(uri)?.use {
+        ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    } }.getOrNull()
+    val matrix = Matrix()
+    when (orientation) {
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
+        ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.setRotate(90f); matrix.postScale(-1f, 1f) }
+        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
+        ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.setRotate(-90f); matrix.postScale(-1f, 1f) }
+        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(-90f)
+    }
+    return Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
 }
 fun openFile(context: Context, block: NoteBlock): String? = try {
     val original = Uri.parse(block.uri)

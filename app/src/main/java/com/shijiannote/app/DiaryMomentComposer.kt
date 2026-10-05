@@ -61,11 +61,25 @@ class DiaryMomentComposerState(val model: WorkspaceModel, val day: Long, private
     val redo = mutableStateListOf<String>()
     val blocks get() = moment.blocks()
     val hasContent get() = moment.hasContent()
+    val hasPublishedChanges: Boolean get() {
+        if (!editingPublished) return false
+        val current = parent()
+        val edit = current.diaryInboxItems().firstOrNull {
+            it.status == "draft" && it.originalStatus == "editing" && it.moment?.id == moment.id
+        }
+        val baseline = edit?.originalMoment?.takeIf { it.isNotBlank() }?.let { decodeDiaryMoment(JSONObject(it)) }
+            ?: current.diaryMoments().firstOrNull { it.id == moment.id }
+        val owner = recordOwner ?: model.diaryRecordingOwner(moment.asNote(current))
+        val recording = RecordingService.state.value
+        return baseline == null || !sameDiaryMomentEditContent(moment, baseline) ||
+            recording.running && recording.owner == owner ||
+            RecordingService.inbox(model.getApplication(), owner).isNotEmpty()
+    }
     fun parent() = model.currentDiary(day)
     fun restore(json: String, editing: Boolean, open: Boolean, owner: String?, failed: Boolean = false) {
         moment = normalize(decodeDiaryMoment(JSONObject(json))); editingPublished = editing; expanded = open
         lastPersistFailed = failed
-        recordOwner = owner; active = blocks.lastOrNull { it.type !in setOf("image", "audio", "file", "link") }?.id ?: blocks.first().id
+        recordOwner = owner; active = blocks.lastOrNull { it.type !in setOf("image", "video", "audio", "file", "link") }?.id ?: blocks.first().id
     }
     fun open(note: NoteNode) {
         val id = note.id.removePrefix("moment-")
@@ -81,7 +95,7 @@ class DiaryMomentComposerState(val model: WorkspaceModel, val day: Long, private
         }
         moment = normalize(moment); lastPersistFailed = false
         expanded = true; undo.clear(); redo.clear(); selections.clear(); compositions.clear(); typingStyles = emptySet()
-        active = blocks.lastOrNull { it.type !in setOf("image", "audio", "file", "link") }?.id ?: blocks.first().id
+        active = blocks.lastOrNull { it.type !in setOf("image", "video", "audio", "file", "link") }?.id ?: blocks.first().id
         recordOwner = model.diaryRecordingOwner(moment.asNote(parent()))
         keyboardRequest++
     }
@@ -124,13 +138,13 @@ class DiaryMomentComposerState(val model: WorkspaceModel, val day: Long, private
     fun insert(block: NoteBlock) {
         val next = blocks.toMutableList()
         val index = next.indexOfFirst { it.id == active }.takeIf { it >= 0 } ?: next.lastIndex
-        if (block.type in setOf("image", "audio", "file", "link") && next[index].type == "text" && next[index].text.isBlank()) {
+        if (block.type in setOf("image", "video", "audio", "file", "link") && next[index].type == "text" && next[index].text.isBlank()) {
             next[index] = block
         } else next.add(index + 1, block)
         setBlocks(next); active = block.id; expanded = true
     }
     fun prepareTextInput() {
-        if (blocks.none { it.id == active && it.type !in setOf("image", "audio", "file", "link") }) insert(NoteBlock())
+        if (blocks.none { it.id == active && it.type !in setOf("image", "video", "audio", "file", "link") }) insert(NoteBlock())
     }
     fun undo() {
         if (undo.isEmpty() || busy || importing) return
@@ -174,6 +188,12 @@ class DiaryMomentComposerState(val model: WorkspaceModel, val day: Long, private
         else model.flush(parent().id)
         if (editingPublished) reset() else expanded = false
     }
+    suspend fun closeUnchangedEdit(): Boolean {
+        if (!editingPublished || hasPublishedChanges || !model.cancelUnchangedDiaryMomentEdit(parent(), moment)) return false
+        model.flush(parent().id)
+        reset()
+        return true
+    }
     suspend fun publish(context: android.content.Context): DiaryMoment {
         check(!editingPublished) { "已发布片段请通过完成按钮应用修改" }
         finishRecording(context); persist()
@@ -213,7 +233,7 @@ fun rememberDiaryMomentComposer(model: WorkspaceModel, day: Long, onError: (Stri
     return rememberSaveable(day, saver = saver) { DiaryMomentComposerState(model, day) { errors(it) } }
 }
 
-/** A single mixed-block editor that remains on the road, with a compact seven-action bottom row. */
+/** A single mixed-block editor that remains on the road, with a compact six-action bottom row. */
 @Composable
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, onClock: () -> Unit,
@@ -248,9 +268,16 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
     }
     var addMenu by remember { mutableStateOf(false) }
     var viewingImage by remember { mutableStateOf<String?>(null) }
-    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
-    var cameraMoment by rememberSaveable { mutableStateOf<String?>(null) }
-    var cameraBlock by rememberSaveable { mutableStateOf<String?>(null) }
+    var viewingVideo by remember { mutableStateOf<NoteBlock?>(null) }
+    var removing by remember { mutableStateOf<NoteBlock?>(null) }
+    var captureChoice by remember { mutableStateOf(false) }
+    var selection by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var selectionTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectionFromCamera by rememberSaveable { mutableStateOf(false) }
+    var importImageStorage by rememberSaveable { mutableStateOf("reference") }
+    var importVideoStorage by rememberSaveable { mutableStateOf("reference") }
+    var importImageQuality by rememberSaveable { mutableStateOf("original") }
+    var importVideoQuality by rememberSaveable { mutableStateOf("original") }
     var pendingImports by rememberSaveable { mutableStateOf(listOf<String>()) }
     var importTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var importImages by rememberSaveable { mutableStateOf(true) }
@@ -266,11 +293,12 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
     fun queueImports(uris: List<Uri>, images: Boolean) {
         if (uris.isEmpty()) return
         uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
-        importTarget = state.moment.id; importImages = images
+        importTarget = selectionTarget ?: state.moment.id; importImages = images
         pendingImports = uris.map { uri -> JSONObject().put("id", UUID.randomUUID().toString()).put("uri", uri.toString()).toString() }
         state.importing = true; importGeneration++
     }
-    val multipleImages = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> queueImports(uris, true) }
+    val multipleImages = rememberVisualMediaPicker({ uris -> selection = uris.map(Uri::toString); selectionFromCamera = false }, onError)
+    val camera = rememberSystemCapture({ uri -> selection = listOf(uri.toString()); selectionFromCamera = true }, onError)
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> queueImports(uris, false) }
     LaunchedEffect(importGeneration, importTarget) {
         if (pendingImports.isNotEmpty()) {
@@ -283,7 +311,9 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                     val original = if (state.moment.id == target) state.moment else state.model.getDiaryMomentNote(state.day, target)?.asDiaryMoment()
                         ?: error("原草稿不可用，请从收纳箱重试")
                     if (original.blocks().none { it.id == id }) {
-                        val block = importMedia(context, Uri.parse(entry.getString("uri")), importImages, copy = true).copy(id = id)
+                        val uri = Uri.parse(entry.getString("uri"))
+                        val block = (if (importImages) importVisualMedia(context, uri, MediaImportPolicy(importImageStorage, importVideoStorage, importImageQuality, importVideoQuality))
+                            else importMedia(context, uri, false, copy = false)).copy(id = id)
                         if (state.moment.id == target) state.insert(block)
                         else {
                             val existing = original.blocks()
@@ -297,25 +327,15 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                     pendingImports = pendingImports.drop(1)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { onError(failure.message ?: "素材添加失败，已添加内容仍保留"); pendingImports = emptyList() }
+            catch (failure: Exception) {
+                onError(failure.message ?: "素材添加失败，已添加内容仍保留")
+                if (importImages) {
+                    selection = pendingImports.map { JSONObject(it).getString("uri") }; selectionTarget = importTarget
+                }
+                pendingImports = emptyList()
+            }
             finally { state.importing = false }
         }
-    }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        val path = cameraPath; val id = cameraMoment; val blockId = cameraBlock
-        if (path != null && id != null && blockId != null) scope.launch {
-            runCatching {
-                val current = state.model.getDiaryMomentNote(state.day, id) ?: return@runCatching
-                val saved = current.asDiaryMoment()
-                val next = saved.blocks().mapNotNull { block -> if (block.id != blockId) block else if (success && File(path).length() > 0) block.copy(bytes = File(path).length()) else null }
-                val updated = saved.copy(document = encodeBlocks(next.ifEmpty { listOf(NoteBlock()) }), text = blockPlainText(next))
-                if (state.moment.id == id) state.change(updated.copy(sentAt = state.moment.sentAt))
-                else if (state.model.currentDiary(state.day).diaryInboxItems().any { it.originalStatus == "editing" && it.moment?.id == id }) state.model.saveDiaryMomentEdit(state.parent(), updated)
-                else state.model.saveDiaryDraft(state.parent(), updated)
-                state.model.flush(state.parent().id)
-            }.onFailure { onError(it.message ?: "照片保存失败，可在收纳箱重试") }
-        }
-        cameraPath = null; cameraMoment = null; cameraBlock = null
     }
     var requestedOwner by rememberSaveable { mutableStateOf<String?>(null) }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -379,17 +399,16 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                     if (block.type == "image") {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             group.forEach { image ->
-                                Box(Modifier.size(44.dp)) {
-                                    var bitmap by remember(image.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
-                                    LaunchedEffect(image.uri) { bitmap = loadImage(context, image.uri, 160) }
-                                    bitmap?.let { Image(it.asImageBitmap(), image.text, Modifier.size(38.dp).align(Alignment.BottomStart).clip(RoundedCornerShape(6.dp)).clickable { viewingImage = image.id }, contentScale = ContentScale.Crop) }
-                                        ?: Icon(Icons.Default.Image, image.text, Modifier.size(38.dp).align(Alignment.BottomStart), tint = Quiet)
-                                    IconButton(onClick = { state.setBlocks(state.blocks.filterNot { it.id == image.id }) }, enabled = editable,
-                                        modifier = Modifier.size(20.dp).align(Alignment.TopEnd).background(Color.White, RoundedCornerShape(10.dp))) { Icon(Icons.Default.Close, "移除此素材", Modifier.size(12.dp)) }
+                                Row(verticalAlignment = Alignment.Top) {
+                                    val side = with(LocalDensity.current) { 31.sp.toDp() * 3.5f }
+                                    VisualMediaTile(image, side) { viewingImage = image.id }
+                                    IconButton(onClick = { removing = image }, enabled = editable, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Close, "移除此素材", Modifier.size(16.dp))
+                                    }
                                 }
                             }
                         }
-                    } else if (block.type in setOf("audio", "file", "link")) {
+                    } else if (block.type in setOf("video", "audio", "file", "link")) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             when (block.type) {
                                 "image" -> {
@@ -399,10 +418,11 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                                         ?: Icon(Icons.Default.Image, null, Modifier.size(38.dp), tint = Quiet)
                                     Text(block.text, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f).padding(start = 8.dp))
                                 }
+                                "video" -> Box(Modifier.weight(1f)) { VisualMediaTile(block, with(LocalDensity.current) { 31.sp.toDp() * 3.5f }) { viewingVideo = block } }
                                 "audio" -> Box(Modifier.weight(1f)) { AudioPlayer(block, onError) }
                                 else -> TextButton(onClick = { openFile(context, block)?.let(onError) }, modifier = Modifier.weight(1f)) { Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp)); Text(block.text, fontSize = 12.sp, maxLines = 1) }
                             }
-                            IconButton(onClick = { state.setBlocks(state.blocks.filterNot { it.id == block.id }) }, enabled = editable, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Close, "移除此素材", Modifier.size(15.dp)) }
+                            IconButton(onClick = { removing = block }, enabled = editable, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Close, "移除此素材", Modifier.size(15.dp)) }
                         }
                     } else {
                         val requester = remember(block.id) { FocusRequester() }
@@ -430,7 +450,7 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                                 readOnly = !editable, textStyle = style, onTextLayout = { layout = it; keepCaret() }, decorationBox = { inner ->
                                     Box(Modifier.fillMaxWidth().padding(vertical = 3.dp)) { if (block.text.isEmpty()) Text("留下这一刻…", style = style.copy(color = Quiet)); inner() }
                                 })
-                            if (blocks.size > 1) IconButton(onClick = { state.setBlocks(state.blocks.filterNot { it.id == block.id }) }, enabled = editable, modifier = Modifier.size(26.dp)) { Icon(Icons.Default.Close, "移除此段", Modifier.size(13.dp)) }
+                            if (blocks.size > 1) IconButton(onClick = { removing = block }, enabled = editable, modifier = Modifier.size(26.dp)) { Icon(Icons.Default.Close, "移除此段", Modifier.size(13.dp)) }
                         }
                         LaunchedEffect(state.keyboardRequest, block.id, state.busy, state.importing) {
                             if (state.expanded && editable && block.id == state.active && state.keyboardRequest > 0) { requester.requestFocus(); keyboard?.show() }
@@ -451,16 +471,20 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
                 FormatAction(Icons.Default.FormatListBulleted, "列表", false, editable) { state.prepareTextInput(); state.blocks.firstOrNull { it.id == state.active }?.let { state.updateBlock(it.copy(type = if (it.type == "bullet") "text" else "bullet")) } }
                 FormatAction(Icons.Default.FormatQuote, "引用", false, editable) { state.prepareTextInput(); state.blocks.firstOrNull { it.id == state.active }?.let { state.updateBlock(it.copy(type = if (it.type == "quote") "text" else "quote")) } }
                 FormatAction(Icons.Default.Add, "新段落", false, editable) { state.insert(NoteBlock()); state.keyboardRequest++ }
+                FormatAction(Icons.Default.Tag, "新增标签", false, editable) {
+                    state.expanded = true; val id = UUID.randomUUID().toString(); tagSlots.add(id to ""); tagFocus = id
+                }
             }
             }
         }
+        if (state.importing) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text("正在导入素材…", color = Quiet, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp))
+        }
         Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            ComposerAction(Icons.Default.Keyboard, "键盘", !state.busy && !state.importing) { expandKeyboard() }
             ComposerAction(Icons.Default.MicNone, "语音", !state.busy && !state.importing) { startRecording() }
             ComposerAction(Icons.Default.Schedule, "发生时间", !state.busy && !state.importing) { keyboard?.hide(); onClock() }
-            ComposerAction(Icons.Default.Tag, "新增标签", !state.busy && !state.importing) {
-                state.expanded = true; val id = UUID.randomUUID().toString(); tagSlots.add(id to ""); tagFocus = id
-            }
+            ComposerAction(Icons.Default.Keyboard, "键盘", editable) { expandKeyboard() }
             ComposerAction(Icons.Default.Inventory2, "暂存", (state.hasContent || moment.occurredAt != null || recording.running && recording.owner == state.recordOwner) && editable) { keyboard?.hide(); focus.clearFocus(); onStage() }
             ComposerAction(Icons.Default.AddCircleOutline, "添加素材", !state.busy && !state.importing) { state.expanded = true; keyboard?.hide(); addMenu = true }
             IconButton(onClick = { keyboard?.hide(); onPublish() }, enabled = state.hasContent && !state.editingPublished && !state.busy && !state.importing, modifier = Modifier.size(44.dp)) {
@@ -469,31 +493,35 @@ fun DiaryMomentComposer(state: DiaryMomentComposerState, maxEditorHeight: Dp, on
         }
     }
     if (addMenu) SoftDialog("添加素材", { addMenu = false }) {
-        OutlinedButton(onClick = { addMenu = false; multipleImages.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) { Text("选择多张图片") }
-        OutlinedButton(onClick = { addMenu = false; scope.launch {
-            state.importing = true
-            runCatching {
-                val file = File(File(context.filesDir, "assets").apply { mkdirs() }, "camera-" + UUID.randomUUID() + ".jpg")
-                file.createNewFile()
-                val block = NoteBlock(type = "image", text = "拍摄照片", uri = Uri.fromFile(file).toString(), owned = true, mime = "image/jpeg")
-                cameraPath = file.absolutePath; cameraMoment = state.moment.id; cameraBlock = block.id
-                state.insert(block); state.model.flush(state.parent().id)
-                camera.launch(FileProvider.getUriForFile(context, context.packageName + ".files", file))
-            }.onFailure { failure ->
-                val placeholder = cameraBlock
-                val file = cameraPath?.let(::File)
-                runCatching {
-                    if (placeholder != null) { state.setBlocks(state.blocks.filterNot { it.id == placeholder }); state.model.flush(state.parent().id) }
-                    if (file?.length() == 0L) file.delete()
-                    cameraPath = null; cameraMoment = null; cameraBlock = null
-                }.onFailure { cleanup -> onError(cleanup.message ?: "相机占位尚未移除，请在收纳箱重试") }
-                onError(failure.message ?: "无法打开相机")
-            }
-            state.importing = false
-        } }, modifier = Modifier.fillMaxWidth()) { Text("拍摄照片") }
-        OutlinedButton(onClick = { addMenu = false; filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("添加文件") }
-        OutlinedButton(onClick = { addMenu = false; startRecording() }, modifier = Modifier.fillMaxWidth()) { Text("录音") }
+        OutlinedButton(onClick = { addMenu = false; selectionTarget = state.moment.id; multipleImages() }, modifier = Modifier.fillMaxWidth()) { Text("从相册选择图片或视频") }
+        if (appPreferences(context).getBoolean("diaryAllowCapture", false)) OutlinedButton(onClick = {
+            addMenu = false; selectionTarget = state.moment.id; captureChoice = true
+        }, modifier = Modifier.fillMaxWidth()) { Text("拍摄照片或视频") }
+        OutlinedButton(onClick = { addMenu = false; selectionTarget = state.moment.id; filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("添加文件") }
     }
+    if (captureChoice) SoftDialog("使用系统相机", { captureChoice = false }) {
+        Text("拍摄完成后再确认是否加入片段。选择不加入，成功拍摄的原件仍在系统相册。相机可用设置由手机系统决定。", color = Quiet)
+        OutlinedButton(onClick = { captureChoice = false; camera(false) }) { Text("拍摄照片") }
+        OutlinedButton(onClick = { captureChoice = false; camera(true) }) { Text("拍摄视频") }
+    }
+    if (selection.isNotEmpty()) {
+        val uris = selection.map(Uri::parse)
+        val types = uris.map { context.contentResolver.getType(it).orEmpty() }
+        val fallback = TreeRules.imagePreference(state.parent(), state.model.nodes.value, true, imageStorageDefault(context))
+        MediaImportDialog(mediaImportDefaults(context, fallback), types.any { it.startsWith("image/") }, types.any { it.startsWith("video/") },
+            title = if (selectionFromCamera) "是否导入拍摄素材？" else "导入照片或视频",
+            previews = if (selectionFromCamera) uris.mapIndexed { i, uri -> NoteBlock(type = if (types[i].startsWith("video/")) "video" else "image", uri = uri.toString(), text = "拍摄素材") } else emptyList(),
+            onDismiss = { selection = emptyList(); selectionTarget = null }, onConfirm = { policy ->
+                importImageStorage = policy.imageStorage; importVideoStorage = policy.videoStorage
+                importImageQuality = policy.imageQuality; importVideoQuality = policy.videoQuality
+                queueImports(uris, true); selection = emptyList(); selectionTarget = null
+            })
+    }
+    removing?.let { block -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("是否移除此${mediaKindLabel(block.type)}？") },
+        text = { Text("从当前片段移除，原文件保留。移除后可使用撤销恢复。") },
+        confirmButton = { TextButton(onClick = { state.setBlocks(state.blocks.filterNot { it.id == block.id }); removing = null }) { Text("移除") } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } }) }
+    viewingVideo?.let { VideoViewer(it, onError) { viewingVideo = null } }
     viewingImage?.let { id -> ImageViewer(state.blocks.filter { it.type == "image" }, id) { viewingImage = null } }
 }
 

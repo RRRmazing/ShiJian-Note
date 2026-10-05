@@ -82,6 +82,9 @@ fun DiaryMoment.hasContent(): Boolean = title.isNotBlank() || tags.isNotBlank() 
 fun sameDiaryMomentState(a: DiaryMoment, b: DiaryMoment): Boolean =
     a.id == b.id && a.createdAt == b.createdAt && a.title == b.title && a.tags == b.tags && a.occurredAt == b.occurredAt && a.sentAt == b.sentAt &&
         decodeBlocks(a.document, a.text).map { it.copy(id = "") } == decodeBlocks(b.document, b.text).map { it.copy(id = "") }
+/** Saving a legacy unset occurrence time can materialize its existing displayed default. */
+fun sameDiaryMomentEditContent(a: DiaryMoment, b: DiaryMoment): Boolean =
+    sameDiaryMomentState(a.copy(occurredAt = a.occurrenceTime), b.copy(occurredAt = b.occurrenceTime))
 fun NoteNode.hasNoteContent(): Boolean = title.isNotBlank() || tags.isNotBlank() || blocks().any { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }
 fun NoteNode.hasDiaryContent(): Boolean = hasNoteContent() || diaryMoments().any { it.hasContent() }
 fun NoteNode.withDiaryMoment(note: NoteNode): NoteNode {

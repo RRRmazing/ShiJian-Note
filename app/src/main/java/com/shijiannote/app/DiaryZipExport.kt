@@ -108,9 +108,9 @@ object DiaryZipExport {
                             return path
                         }
                         val actualBlocks = moments?.flatMap { decodeBlocks(it.document, it.text) } ?: blocks
-                        actualBlocks.filter { it.type in setOf("image", "audio", "file") && it.uri.isNotBlank() }.forEach { copyMedia(it) }
+                        actualBlocks.filter { it.type in setOf("image", "video", "audio", "file") && it.uri.isNotBlank() }.forEach { copyMedia(it) }
                         // A media block without a URI must be reported, never silently exported as success.
-                        require(actualBlocks.none { it.type in setOf("image", "audio", "file") && it.uri.isBlank() }) { "存在未绑定的图片、语音或文件，请补充素材后重试。" }
+                        require(actualBlocks.none { it.type in setOf("image", "video", "audio", "file") && it.uri.isBlank() }) { "存在未绑定的图片、语音或文件，请补充素材后重试。" }
                         var backgroundPath: String? = null
                         if (part == "road") {
                             if (note.diaryRoadBackground.isNotBlank()) backgroundPath = copyMedia(NoteBlock(type = "image", text = "小路背景", uri = note.diaryRoadBackground), true)
@@ -194,12 +194,13 @@ object DiaryZipExport {
             val label = all.find { it.id == block.target && it.deletedAt == null }?.displayTitle() ?: text.ifBlank { "关联记录已删除" }
             return if (format == "html") "<p>关联记录：${html(label)}（未包含关联正文）</p>" else "关联记录：$label（未包含关联正文）\n\n"
         }
-        if (block.type in setOf("image", "audio", "file")) {
+        if (block.type in setOf("image", "video", "audio", "file")) {
             val media = requireNotNull(path) { "素材没有成功打包" }
-            val label = text.ifBlank { when (block.type) { "image" -> "图片"; "audio" -> "语音"; else -> "文件" } }
+            val label = text.ifBlank { when (block.type) { "image" -> "图片"; "video" -> "视频"; "audio" -> "语音"; else -> "文件" } }
             return when (format) {
                 "html" -> when (block.type) {
                     "image" -> "<figure><img src=\"${html(media)}\" alt=\"${html(label)}\"><figcaption>${html(label)}</figcaption></figure>"
+                    "video" -> "<p>${html(label)}</p><video controls src=\"${html(media)}\"></video>"
                     "audio" -> "<p>${html(label)} · ${audioTime(block.duration)}</p><audio controls src=\"${html(media)}\"></audio><p><a href=\"${html(media)}\">打开原语音文件</a></p>"
                     else -> "<p><a href=\"${html(media)}\">${html(label)}</a></p>"
                 }

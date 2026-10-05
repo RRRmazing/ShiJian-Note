@@ -46,7 +46,7 @@ import java.util.Locale
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boolean, reveal: String = "", onBack: () -> Unit, onOpen: (NoteNode) -> Unit, onExport: (Set<String>) -> Unit, onDiaryRoad: ((NoteNode) -> Unit)? = null,
-    onMomentPosition: ((NoteNode) -> Unit)? = null, onDiaryInbox: ((Long?) -> Unit)? = null) {
+    onMomentPosition: ((NoteNode) -> Unit)? = null, onDiaryInbox: ((Long?) -> Unit)? = null, focusBlockId: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val focus = LocalFocusManager.current
@@ -128,7 +128,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         val next = blocks.toMutableList()
         val index = blocks.indexOfFirst { it.id == active }.takeIf { it >= 0 } ?: blocks.lastIndex
         next.add(index + 1, block)
-        if (block.type in setOf("image", "audio", "file", "link")) next.add(index + 2, NoteBlock())
+        if (block.type in setOf("image", "video", "audio", "file", "link")) next.add(index + 2, NoteBlock())
         change(note.copy(document = encodeBlocks(next), text = blockPlainText(next)))
         active = next.getOrNull(index + 2)?.id ?: block.id
     }
@@ -204,11 +204,18 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         }
     }
     val latestNote by rememberUpdatedState(note)
+    var selectedVisual by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var selectedFromCamera by rememberSaveable { mutableStateOf(false) }
+    var captureChoice by remember { mutableStateOf(false) }
+    var removal by remember { mutableStateOf<NoteBlock?>(null) }
+    val visualPicker = rememberVisualMediaPicker({ uris -> selectedVisual = uris.map(Uri::toString); selectedFromCamera = false }, { error = it })
+    val camera = rememberSystemCapture({ uri -> selectedVisual = listOf(uri.toString()); selectedFromCamera = true }, { error = it })
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             val image = importKind == "image"
-            val copy = image && TreeRules.imagePreference(latestNote, nodes, true, imageStorageDefault(context)) == "copy"
-            runCatching { importMedia(context, uri, image, copy) }.onSuccess { latestInsert(it) }.onFailure { error = it.message ?: "添加失败" }
+            val visual = image || importKind == "video"
+            val fallback = TreeRules.imagePreference(latestNote, nodes, true, imageStorageDefault(context))
+            runCatching { if (visual) importVisualMedia(context, uri, mediaImportDefaults(context, fallback)) else importMedia(context, uri, false, false).copy(type = if (importKind == "audio") "audio" else "file") }.onSuccess { latestInsert(it) }.onFailure { error = it.message ?: "添加失败" }
         }
     }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -278,18 +285,19 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         while (true) { runCatching { latestCollect() }.onFailure { error = it.message.orEmpty() }; delay(1000) }
     }
     LaunchedEffect(recording.error) { if (recording.error.isNotBlank()) error = recording.error }
-    val visibleIds = visibleBlockIds(blocks, reveal.isNotBlank())
+    val visibleIds = visibleBlockIds(blocks, reveal.isNotBlank() || focusBlockId != null)
     val shown = blocks.filter { it.id in visibleIds }
     val preambleItems = if (note.kind == "diary") 1 else 2
-    LaunchedEffect(reveal) {
-        if (reveal.isNotBlank()) {
-            val index = shown.indexOfFirst { it.text.contains(reveal, ignoreCase = true) }
+    LaunchedEffect(reveal, focusBlockId) {
+        if (reveal.isNotBlank() || focusBlockId != null) {
+            val index = shown.indexOfFirst { if (focusBlockId != null) it.id == focusBlockId else it.text.contains(reveal, ignoreCase = true) }
             if (index >= 0) listState.scrollToItem(index + preambleItems)
         }
     }
     Surface(Modifier.fillMaxSize(), color = Mist) {
         Column(Modifier.fillMaxSize().then(if (diaryEditor) Modifier.statusBarsPadding().navigationBarsPadding() else Modifier).imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val actionModifier = if (note.kind == "diary") Modifier.size(36.dp) else Modifier
                 IconButton(onClick = ::leave, enabled = !leaving) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "保存并返回") }
                 Column(Modifier.weight(1f)) {
                     Text(when (note.kind) {
@@ -301,16 +309,18 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                     if (saved.isNotBlank() && (!diaryEditor || saved.contains("失败"))) Text(saved, fontSize = 11.sp, color = if (saved.contains("失败")) MaterialTheme.colorScheme.error else Quiet, modifier = Modifier.clickable { model.retry() })
                 }
                 if (diaryEditor && editing) {
-                    IconButton(onClick = ::undoEdit, enabled = undo.isNotEmpty() && !leaving) { Icon(Icons.Default.Undo, "撤销") }
-                    IconButton(onClick = ::redoEdit, enabled = redo.isNotEmpty() && !leaving) { Icon(Icons.Default.Redo, "重做") }
+                    IconButton(onClick = ::undoEdit, enabled = undo.isNotEmpty() && !leaving, modifier = actionModifier) { Icon(Icons.Default.Undo, "撤销") }
+                    IconButton(onClick = ::redoEdit, enabled = redo.isNotEmpty() && !leaving, modifier = actionModifier) { Icon(Icons.Default.Redo, "重做") }
                 }
-                IconButton(onClick = ::finishEditing, enabled = !leaving) { Icon(if (editing) Icons.Default.Done else Icons.Default.Edit, if (editing && diaryEditor) "完成编辑" else if (editing) "阅读" else "编辑") }
-                if (note.kind == "diary" && onDiaryRoad != null && (parentDiary?.diaryRoadEnabled == true || note.day == dayMillis())) IconButton(onClick = { leaveToRoad = true; leave() }, enabled = !leaving) {
+                IconButton(onClick = ::finishEditing, enabled = !leaving, modifier = actionModifier) { Icon(if (editing) Icons.Default.Done else Icons.Default.Edit, if (editing && diaryEditor) "完成编辑" else if (editing) "阅读" else "编辑") }
+                if (note.kind == "diary") DiaryFavoriteButton(parentDiary?.favorite == true,
+                    { model.toggleDiaryFavorite(note) }, enabled = !leaving)
+                if (note.kind == "diary" && onDiaryRoad != null && (parentDiary?.diaryRoadEnabled == true || note.day == dayMillis())) IconButton(onClick = { leaveToRoad = true; leave() }, enabled = !leaving, modifier = actionModifier) {
                     Icon(Icons.Default.Route, "查看小路")
                 }
                 if (isUnsentMoment) TextButton(onClick = ::publishMoment, enabled = !leaving && note.hasNoteContent()) { Text("发送") }
                 Box {
-                    IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "更多") }
+                    IconButton(onClick = { more = true }, modifier = actionModifier) { Icon(Icons.Default.MoreVert, "更多") }
                     DropdownMenu(more, { more = false }) {
                         if (note.kind != "diary_moment") DropdownMenuItem(text = { Text(if (note.kind == "diary") "日记设置" else "记录设置") }, onClick = {
                             more = false
@@ -326,7 +336,11 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                         if (note.kind != "diary_moment") {
                             if (!diaryEditor) DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
                             if (note.kind != "diary" || note.day != dayMillis()) DropdownMenuItem(text = { Text("导出这一篇") }, onClick = { more = false; scope.launch { model.save(note); model.flush(note.id); onExport(setOf(note.id)) } })
-                            DropdownMenuItem(text = { Text(if (note.favorite) "取消收藏" else "收藏") }, onClick = { more = false; change(note.copy(favorite = !note.favorite)) })
+                            val favorite = if (note.kind == "diary") parentDiary?.favorite == true else note.favorite
+                            DropdownMenuItem(text = { Text(if (favorite) "取消收藏" else "收藏") }, onClick = {
+                                more = false
+                                if (note.kind == "diary") model.toggleDiaryFavorite(note) else change(note.copy(favorite = !note.favorite))
+                            })
                         }
                         DropdownMenuItem(text = { Text("从模板追加") }, onClick = { more = false; templates = true })
                     }
@@ -368,7 +382,8 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                 }
                 }
                 items(shown, key = { it.id }) { block ->
-                    if (block.type in setOf("image", "audio", "file", "link")) {
+                    Column(if (block.id == focusBlockId) Modifier.fillMaxWidth().testTag("media-focused-${block.id}").border(2.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(8.dp)).padding(6.dp) else Modifier.fillMaxWidth()) {
+                    if (block.type in setOf("image", "video", "audio", "file", "link")) {
                         MediaBlockCard(block, note, nodes, editing, onView = { viewing = block.id }, onOpen = { target -> onOpen(target) }, onOptions = { assetSettings = block }, onError = { error = it })
                     } else {
                         val heading = block.type.startsWith("heading")
@@ -386,9 +401,10 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                             if (editing) BasicTextField(TextFieldValue(block.richText(), selections[block.id]?.let { TextRange(it.start.coerceIn(0, block.text.length), it.end.coerceIn(0, block.text.length)) } ?: TextRange(block.text.length), compositions[block.id]?.takeIf { it.end <= block.text.length }), { value -> selections[block.id] = value.selection; compositions[block.id] = value.composition; if (value.text != block.text) updateBlock(typingStyles[block.id]?.let { block.editText(value.text, it) } ?: block.editText(value.text)) }, Modifier.weight(1f).onFocusChanged { if (it.isFocused) active = block.id }, textStyle = style,
                                 decorationBox = { inner -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { if (block.text.isEmpty()) Text("开始记录…", style = style.copy(color = Quiet.copy(alpha = .5f))); inner() } })
                             else Text(block.richText(reveal), style = style, modifier = Modifier.weight(1f).clickable { editing = true; active = block.id })
-                            if (editing && blocks.size > 1) IconButton(onClick = { val next = blocks.filter { it.id != block.id }; change(note.copy(document = encodeBlocks(next), text = blockPlainText(next))) }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "移除此段", modifier = Modifier.size(15.dp), tint = Quiet) }
+                            if (editing && blocks.size > 1) IconButton(onClick = { removal = block }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "移除此段", modifier = Modifier.size(15.dp), tint = Quiet) }
                         }
                     }
+                }
                 }
                 item("append") { if (editing) TextButton(onClick = { insert(NoteBlock()) }) { Text("＋ 新段落") } }
             }
@@ -410,7 +426,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                         IconButton(onClick = ::redoEdit, enabled = redo.isNotEmpty()) { Icon(Icons.Default.Redo, "重做") }
                     }
                     val current = blocks.find { it.id == active }
-                    if (current != null && current.type !in setOf("image", "file", "audio", "link")) {
+                    if (current != null && current.type !in setOf("image", "video", "file", "audio", "link")) {
                         fun formatMark(style: String) {
                             val range = selections[current.id] ?: TextRange.Zero
                             if (diaryEditor && range.collapsed) {
@@ -432,11 +448,36 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         }
     }
     if (addMenu) SoftDialog("添加内容", { addMenu = false }) {
-        Button(onClick = { importKind = "image"; rebinding = null; addMenu = false; filePicker.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) { Text("图片") }
-        OutlinedButton(onClick = { addMenu = false; startRecording() }, modifier = Modifier.fillMaxWidth()) { Text("录音") }
+        Button(onClick = { rebinding = null; addMenu = false; visualPicker() }, modifier = Modifier.fillMaxWidth()) { Text("从相册选择图片或视频") }
+        if (diaryEditor && appPreferences(context).getBoolean("diaryAllowCapture", false)) OutlinedButton(onClick = {
+            rebinding = null; addMenu = false; captureChoice = true
+        }, modifier = Modifier.fillMaxWidth()) { Text("拍摄照片或视频") }
         OutlinedButton(onClick = { addMenu = false; attachmentMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("添加附件") }
         TextButton(onClick = { addMenu = false }) { Text("关闭") }
     }
+    if (captureChoice) SoftDialog("使用系统相机", { captureChoice = false }) {
+        Text("拍摄完成后确认是否导入。选择不加入，拍摄原件仍在系统相册。", color = Quiet)
+        OutlinedButton(onClick = { captureChoice = false; camera(false) }) { Text("拍摄照片") }
+        OutlinedButton(onClick = { captureChoice = false; camera(true) }) { Text("拍摄视频") }
+    }
+    if (selectedVisual.isNotEmpty()) {
+        val uris = selectedVisual.map(Uri::parse)
+        val types = uris.map { context.contentResolver.getType(it).orEmpty() }
+        val fallback = TreeRules.imagePreference(note, nodes, true, imageStorageDefault(context))
+        MediaImportDialog(mediaImportDefaults(context, fallback), types.any { it.startsWith("image/") }, types.any { it.startsWith("video/") },
+            title = if (selectedFromCamera) "是否导入拍摄素材？" else "导入照片或视频",
+            previews = if (selectedFromCamera) uris.mapIndexed { i, uri -> NoteBlock(type = if (types[i].startsWith("video/")) "video" else "image", uri = uri.toString(), text = "拍摄素材") } else emptyList(),
+            onDismiss = { selectedVisual = emptyList() }, onConfirm = { policy ->
+                selectedVisual = emptyList()
+                scope.launch { runCatching { uris.forEach { latestInsert(importVisualMedia(context, it, policy)) } }.onFailure { error = it.message ?: "添加失败，已导入内容保留" } }
+            })
+    }
+    removal?.let { block -> AlertDialog(onDismissRequest = { removal = null }, title = { Text("是否移除此${mediaKindLabel(block.type)}？") },
+        text = { Text("从当前记录移除，原文件保留。可使用撤销恢复。") },
+        confirmButton = { TextButton(onClick = {
+            val next = blocks.filter { it.id != block.id }.ifEmpty { listOf(NoteBlock()) }
+            change(note.copy(document = encodeBlocks(next), text = blockPlainText(next))); removal = null
+        }) { Text("移除") } }, dismissButton = { TextButton(onClick = { removal = null }) { Text("取消") } }) }
     if (attachmentMenu) SoftDialog("添加附件", { attachmentMenu = false }) {
         listOf("file" to "手机文件", "memory" to "某条记忆", "diary" to "某篇日记").forEach { (kind, title) -> OutlinedButton(onClick = {
             attachmentMenu = false
@@ -531,13 +572,13 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             }
             Text(if (block.type == "link") "引用整篇记录，移除卡片不会删除原记录。" else if (block.owned) "素材保存在时笺中" else "仅引用原文件，移动或删除原文件后可能无法打开。", fontSize = 12.sp, color = Quiet)
             Button(onClick = { updateBlock(block.copy(text = name.ifBlank { block.text }, display = display)); assetSettings = null }, modifier = Modifier.fillMaxWidth()) { Text("完成") }
-            if (block.type == "image" || block.type == "file") {
-                OutlinedButton(onClick = { importKind = block.type; rebinding = block.id; assetSettings = null; filePicker.launch(arrayOf(if (block.type == "image") "image/*" else "*/*")) }) { Text("重新选择原文件") }
+            if (block.type in setOf("image", "video", "audio", "file")) {
+                OutlinedButton(onClick = { importKind = block.type; rebinding = block.id; assetSettings = null; filePicker.launch(arrayOf(when (block.type) { "image" -> "image/*"; "video" -> "video/*"; "audio" -> "audio/*"; else -> "*/*" })) }) { Text("重新选择原文件") }
                 if (block.type == "image" && !block.owned) TextButton(onClick = { scope.launch {
                     runCatching { copyImage(context, block) }.onSuccess { updateBlock(it.copy(text = name, display = display)); assetSettings = null }.onFailure { error = it.message.orEmpty() }
                 } }) { Text("保存图片副本到时笺") }
             }
-            TextButton(onClick = { val next = blocks.filter { it.id != block.id }.ifEmpty { listOf(NoteBlock()) }; change(note.copy(document = encodeBlocks(next), text = blockPlainText(next))); assetSettings = null }) { Text("移除此素材", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = { removal = block; assetSettings = null }) { Text("移除此素材", color = MaterialTheme.colorScheme.error) }
         }
     }
     viewing?.let { id -> ImageViewer(blocks.filter { it.type == "image" }, id, { viewing = null }) }
@@ -568,6 +609,16 @@ fun highlightText(text: String, query: String): AnnotatedString = buildAnnotated
 }
 
 @Composable fun MediaBlockCard(block: NoteBlock, note: NoteNode, nodes: List<NoteNode>, editing: Boolean, onView: () -> Unit, onOpen: (NoteNode) -> Unit, onOptions: () -> Unit, onError: (String) -> Unit) {
+    if (block.type == "video") {
+        var playing by remember { mutableStateOf(false) }
+        SoftCard { Row(verticalAlignment = Alignment.CenterVertically) {
+            VisualMediaTile(block) { playing = true }
+            Column(Modifier.weight(1f).padding(8.dp)) { Text(block.text); Text(if (block.owned) "保存在时笺" else "引用原视频", color = Quiet) }
+            if (editing) IconButton(onClick = onOptions) { Icon(Icons.Default.MoreHoriz, "素材设置") }
+        } }
+        if (playing) VideoViewer(block, onError) { playing = false }
+        return
+    }
     if (block.type == "audio") {
         SoftCard(color = Mint) { AudioPlayer(block, onError, if (editing) onOptions else null) }
         return

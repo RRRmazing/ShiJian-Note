@@ -1,4 +1,5 @@
 package com.shijiannote.app
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 
 import android.graphics.Bitmap
 import android.widget.Toast
@@ -116,6 +117,9 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
             viewingPosition -> viewingPosition = false
             keyboardVisible -> keyboard?.hide()
             recall -> recall = false
+            composer.editingPublished && !composer.hasPublishedChanges -> operation {
+                if (composer.closeUnchangedEdit()) onBack() else departure = true
+            }
             hasWorkingContent() -> departure = true
             else -> { composer.reset(); onBack() }
         }
@@ -192,6 +196,7 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
                                 Icon(Icons.Default.Check, "完成片段编辑", Modifier.size(21.dp))
                             }
                         }
+                        DiaryFavoriteButton(note.favorite, { model.toggleDiaryFavorite(initial) }, enabled = !composer.busy && !composer.importing)
                         IconButton(onClick = { leave { onSummary(latest()) } }, enabled = !composer.busy && !composer.importing, modifier = Modifier.size(36.dp)) {
                             Icon(Icons.Default.MenuBook, if (isToday) "今日结语" else "这一天的结语", Modifier.size(21.dp))
                         }
@@ -282,10 +287,16 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
         onViewPosition = { timeOpen = false; viewingPosition = true })
     if (departure) AlertDialog(onDismissRequest = { departure = false }, title = { Text(if (composer.editingPublished) "片段修改尚未完成" else "片段尚未发送") },
         text = { Text("可以将当前内容留在收纳箱，之后再继续。") },
-        confirmButton = { TextButton(onClick = { departure = false; leave(onBack) }) { Text("存入收纳箱并离开") } },
-        dismissButton = { Row {
-            TextButton(onClick = { departure = false; composer.expanded = true; composer.keyboardRequest++ }) { Text("继续编辑") }
-            TextButton(onClick = { departure = false; operation { composer.discard(context); onBack() } }) { Text("丢弃") }
+        confirmButton = { Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = { departure = false; operation {
+                if (composer.editingPublished) composer.complete(context) else composer.publish(context)
+                onBack()
+            } }, enabled = composer.editingPublished || composer.hasContent) { Text("直接保存") }
+            TextButton(onClick = { departure = false; leave(onBack) }) { Text("存入收纳箱并离开") }
+            Row {
+                TextButton(onClick = { departure = false; composer.expanded = true; composer.keyboardRequest++ }) { Text("继续编辑") }
+                TextButton(onClick = { departure = false; operation { composer.discard(context); onBack() } }) { Text("丢弃") }
+            }
         } })
     deletion?.let { moment ->
         AlertDialog(onDismissRequest = { deletion = null }, title = { Text("将这个片段移入收纳箱？") },
@@ -348,16 +359,22 @@ fun DiaryMomentTagsPreview(tags: String) {
 }
 
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 fun DiaryMomentContentPreview(moment: DiaryMoment, parent: NoteNode, nodes: List<NoteNode>, onOpen: (NoteNode) -> Unit,
-    onError: (String) -> Unit, maxBlocks: Int = 8) {
+    onError: (String) -> Unit, maxBlocks: Int = 8, focusBlockId: String? = null) {
     val context = LocalContext.current
     val blocks = remember(moment.document, moment.text) { runCatching { decodeBlocks(moment.document, moment.text) }.getOrElse { listOf(NoteBlock(text = moment.text)) } }
+    var video by remember { mutableStateOf<NoteBlock?>(null) }
     var imageId by remember { mutableStateOf<String?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         DiaryMomentTagsPreview(moment.tags)
         blocks.filter { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }.take(maxBlocks).forEach { block ->
+            val bring = remember(block.id) { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+            Column(Modifier.then(if (block.id == focusBlockId) Modifier.border(2.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(8.dp)).padding(6.dp) else Modifier)
+                .then(Modifier.bringIntoViewRequester(bring))) {
+            LaunchedEffect(focusBlockId) { if (block.id == focusBlockId) { kotlinx.coroutines.delay(300); bring.bringIntoView() } }
             when (block.type) {
+                "video" -> VisualMediaTile(block) { video = block }
                 "image" -> {
                     var bitmap by remember(block.uri) { mutableStateOf<Bitmap?>(null) }
                     LaunchedEffect(block.uri) { bitmap = loadImage(context, block.uri, 1000) }
@@ -385,7 +402,9 @@ fun DiaryMomentContentPreview(moment: DiaryMoment, parent: NoteNode, nodes: List
                     maxLines = if (blocks.size == 1) 6 else 3, overflow = TextOverflow.Ellipsis)
             }
         }
+        }
         if (blocks.size > maxBlocks || blocks.any { it.text.length > 180 }) Text("点开阅读全文", color = Sky, fontSize = 11.sp)
     }
+    video?.let { VideoViewer(it, onError) { video = null } }
     imageId?.let { id -> ImageViewer(blocks.filter { it.type == "image" }, id) { imageId = null } }
 }
