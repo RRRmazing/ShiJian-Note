@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.*
@@ -53,14 +54,18 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     val nodes by model.nodes.collectAsState()
     var snapshot by rememberSaveable(initial.id) { mutableStateOf(jsonObject(initial).toString()) }
     val note = remember(snapshot) { decodeNode(org.json.JSONObject(snapshot)) }
+    val diaryEditor = note.kind in setOf("diary", "diary_moment")
     val blocks = remember(note.document, note.text) { note.blocks() }
     var editing by rememberSaveable(initial.id) { mutableStateOf(initialEditing) }
     var changed by rememberSaveable(initial.id) { mutableStateOf(false) }
     var active by remember { mutableStateOf(blocks.first().id) }
     val selections = remember(initial.id) { mutableStateMapOf<String, TextRange>() }
     val compositions = remember(initial.id) { mutableStateMapOf<String, TextRange?>() }
-    val undo = remember(initial.id) { mutableStateListOf<String>() }
-    val redo = remember(initial.id) { mutableStateListOf<String>() }
+    val historySaver = listSaver<androidx.compose.runtime.snapshots.SnapshotStateList<String>, String>(
+        save = { it.toList() }, restore = { it.toMutableStateList() })
+    val undo = rememberSaveable(initial.id, saver = historySaver) { mutableStateListOf<String>() }
+    val redo = rememberSaveable(initial.id, saver = historySaver) { mutableStateListOf<String>() }
+    val typingStyles = remember(initial.id) { mutableStateMapOf<String, Set<String>>() }
     var more by remember { mutableStateOf(false) }
     var addMenu by remember { mutableStateOf(false) }
     var attachmentMenu by remember { mutableStateOf(false) }
@@ -94,12 +99,21 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         remember(nodes, diaryRevision, note.day) { model.currentDiary(note.day ?: dayMillis()) }
     } else null
     val publishedMoment = parentDiary?.diaryMoments()?.find { "moment-${it.id}" == note.id }
+    val editingPublishedMoment = remember(initial.id) { initial.kind == "diary_moment" && publishedMoment != null }
     val inboxMoment = parentDiary?.diaryInboxItems()?.firstOrNull { "moment-${it.moment?.id}" == note.id }
-    val isUnsentMoment = note.kind == "diary_moment" && publishedMoment == null
+    val isUnsentMoment = note.kind == "diary_moment" && !editingPublishedMoment && publishedMoment == null
+    val recordingOwner = if (note.kind == "diary_moment") model.diaryRecordingOwner(note) else note.id
+    var pendingRecordingOwner by rememberSaveable(initial.id) { mutableStateOf(recordingOwner) }
+
+    fun persistEditor(value: NoteNode) {
+        if (value.kind == "diary_moment" && editingPublishedMoment && parentDiary != null)
+            model.saveDiaryMomentEdit(parentDiary, value.asDiaryMoment())
+        else model.save(value)
+    }
 
     fun editorMoment(): DiaryMoment = (publishedMoment ?: inboxMoment?.moment ?: DiaryMoment(
         id = note.id.removePrefix("moment-"), createdAt = note.createdAt)).copy(
-        title = note.title, text = note.text, document = note.document, occurredAt = note.diaryOccurredAt,
+        title = note.title, text = note.text, document = note.document, tags = note.tags, occurredAt = note.diaryOccurredAt,
         sentAt = publishedMoment?.sentAt)
 
     fun change(next: NoteNode, track: Boolean = true, restoreDiary: Boolean = false) {
@@ -107,7 +121,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         if (track && snapshot != jsonObject(next).toString()) { undo.add(snapshot); if (undo.size > 100) undo.removeAt(0); redo.clear() }
         val updated = next.copy(updatedAt = System.currentTimeMillis())
         snapshot = jsonObject(updated).toString()
-        if (restoreDiary && updated.kind == "diary") model.restoreDiarySnapshot(updated) else model.save(updated)
+        if (restoreDiary && updated.kind == "diary") model.restoreDiarySnapshot(updated) else persistEditor(updated)
     }
     fun updateBlock(block: NoteBlock) = change(note.copy(document = encodeBlocks(blocks.map { if (it.id == block.id) block else it }), text = blockPlainText(blocks.map { if (it.id == block.id) block else it })))
     fun insert(block: NoteBlock) {
@@ -119,7 +133,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         active = next.getOrNull(index + 2)?.id ?: block.id
     }
     suspend fun collectRecordings() {
-        val inbox = RecordingService.inbox(context, initial.id)
+        val inbox = RecordingService.inbox(context, recordingOwner)
         if (inbox.isNotEmpty()) {
             val latest = decodeNode(org.json.JSONObject(snapshot))
             val next = latest.blocks().toMutableList()
@@ -133,14 +147,14 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         }
     }
     fun leave() {
-        if (recording.running && recording.owner == note.id) { stopBeforeLeaving = true; return }
+        if (recording.running && recording.owner == recordingOwner) { stopBeforeLeaving = true; return }
         scope.launch {
             leaving = true
             runCatching {
                 collectRecordings()
                 val latest = decodeNode(org.json.JSONObject(snapshot))
                 val hasContent = latest.hasDiaryContent()
-                if (latest.kind == "diary_moment") { model.save(latest); model.flush(latest.id) }
+                if (latest.kind == "diary_moment") { persistEditor(latest); model.flush(latest.id) }
                 else if (hasContent || !initialEditing) { if (changed || initialEditing) model.save(decodeNode(org.json.JSONObject(snapshot))); model.flush(note.id) }
                 else if (note.kind != "diary" && nodes.any { it.id == note.id }) {
                     model.flush(note.id)
@@ -157,7 +171,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     suspend fun prepareMove() {
         collectRecordings()
         val latest = decodeNode(org.json.JSONObject(snapshot))
-        model.save(latest)
+        persistEditor(latest)
         model.flush(latest.id)
         withContext(Dispatchers.Main.immediate) {
             keyboard?.hide(); focus.clearFocus(); movePicker = true
@@ -166,7 +180,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     fun openMovePicker() {
         if (preparingMove) return
         val currentRecording = RecordingService.state.value
-        if (currentRecording.running && currentRecording.owner == note.id) { stopBeforeMoving = true; return }
+        if (currentRecording.running && currentRecording.owner == recordingOwner) { stopBeforeMoving = true; return }
         preparingMove = true
         scope.launch {
             runCatching { prepareMove() }.onFailure { error = it.message ?: "保存失败，请重试" }
@@ -198,7 +212,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         }
     }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) runCatching { RecordingService.command(context, "start", initial.id) }.onFailure { error = "无法开始录音" }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) runCatching { RecordingService.command(context, "start", pendingRecordingOwner) }.onFailure { error = "无法开始录音" }
         else error = "录音需要麦克风权限，可在系统应用设置中开启"
     }
     fun startRecording() {
@@ -207,10 +221,10 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         scope.launch {
             runCatching {
                 // Persist the moment's identity before starting a background recording.
-                if (note.kind == "diary_moment") model.registerDiaryRecording(note) else model.save(note)
+                pendingRecordingOwner = if (note.kind == "diary_moment") model.registerDiaryRecording(note) else { model.save(note); note.id }
                 val permissions = listOf(Manifest.permission.RECORD_AUDIO) + if (android.os.Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
                 if (permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED })
-                    RecordingService.command(context, "start", note.id)
+                    RecordingService.command(context, "start", pendingRecordingOwner)
                 else microphone.launch(permissions.toTypedArray())
             }.onFailure { error = it.message ?: "无法开始录音，请重试" }
             startingRecording = false
@@ -218,7 +232,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     }
     fun publishMoment() {
         if (leaving || !note.hasNoteContent()) return
-        if (recording.running && recording.owner == note.id) {
+        if (recording.running && recording.owner == recordingOwner) {
             error = "请先结束录音，再发送片段"; return
         }
         scope.launch {
@@ -236,6 +250,29 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             leaving = false
         }
     }
+    fun undoEdit() {
+        if (undo.isNotEmpty()) { changed = true; redo.add(snapshot); snapshot = undo.removeAt(undo.lastIndex); persistEditor(decodeNode(org.json.JSONObject(snapshot))) }
+    }
+    fun redoEdit() {
+        if (redo.isNotEmpty()) { changed = true; undo.add(snapshot); snapshot = redo.removeAt(redo.lastIndex); persistEditor(decodeNode(org.json.JSONObject(snapshot))) }
+    }
+    fun finishEditing() {
+        if (!editing) { editing = true; return }
+        if (!diaryEditor) { editing = false; focus.clearFocus(); keyboard?.hide(); return }
+        if (recording.running && recording.owner == recordingOwner) { error = "请先结束录音，再完成编辑"; return }
+        scope.launch {
+            leaving = true
+            runCatching {
+                collectRecordings()
+                val latest = decodeNode(org.json.JSONObject(snapshot))
+                if (latest.kind == "diary_moment" && editingPublishedMoment && parentDiary != null)
+                    model.completeDiaryMomentEdit(parentDiary, latest.asDiaryMoment())
+                else { persistEditor(latest); model.flush(latest.id) }
+                editing = false; undo.clear(); redo.clear(); keyboard?.hide(); focus.clearFocus()
+            }.onFailure { error = it.message ?: "保存失败，请重试" }
+            leaving = false
+        }
+    }
     val latestCollect by rememberUpdatedState<suspend () -> Unit> { collectRecordings() }
     LaunchedEffect(note.id) {
         while (true) { runCatching { latestCollect() }.onFailure { error = it.message.orEmpty() }; delay(1000) }
@@ -243,32 +280,31 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     LaunchedEffect(recording.error) { if (recording.error.isNotBlank()) error = recording.error }
     val visibleIds = visibleBlockIds(blocks, reveal.isNotBlank())
     val shown = blocks.filter { it.id in visibleIds }
+    val preambleItems = if (note.kind == "diary") 1 else 2
     LaunchedEffect(reveal) {
         if (reveal.isNotBlank()) {
             val index = shown.indexOfFirst { it.text.contains(reveal, ignoreCase = true) }
-            if (index >= 0) listState.scrollToItem(index + if (note.kind == "diary_moment") 3 else 2)
+            if (index >= 0) listState.scrollToItem(index + preambleItems)
         }
     }
     Surface(Modifier.fillMaxSize(), color = Mist) {
-        Column(Modifier.fillMaxSize().imePadding()) {
+        Column(Modifier.fillMaxSize().then(if (diaryEditor) Modifier.statusBarsPadding().navigationBarsPadding() else Modifier).imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = ::leave, enabled = !leaving) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "保存并返回") }
-                if (note.kind == "diary") IconButton(onClick = {
-                    scope.launch { runCatching {
-                        model.save(note); model.flush(note.id)
-                        if (note.day == dayMillis()) settings = true else daySettings = true
-                    }.onFailure { error = it.message ?: "保存失败，请重试" } }
-                }, enabled = !leaving) { Icon(Icons.Default.Settings, "日记设置") }
                 Column(Modifier.weight(1f)) {
                     Text(when (note.kind) {
-                        "diary" -> "${dateText(note.day ?: note.createdAt)} · 结语"
+                        "diary" -> if (note.day == dayMillis()) "今天" else dateText(note.day ?: note.createdAt)
                         "diary_moment" -> "${dateText(note.day ?: note.createdAt)} · 随记片段"
                         else -> TreeRules.ancestors(note, nodes).lastOrNull()?.displayTitle() ?: "记忆"
                     }, maxLines = 2, fontSize = 14.sp, color = Quiet)
                     val saved = states[if (note.kind == "diary_moment") note.parentId else note.id].orEmpty()
-                    if (saved.isNotBlank()) Text(saved, fontSize = 11.sp, color = if (saved.contains("失败")) MaterialTheme.colorScheme.error else Quiet, modifier = Modifier.clickable { model.retry() })
+                    if (saved.isNotBlank() && (!diaryEditor || saved.contains("失败"))) Text(saved, fontSize = 11.sp, color = if (saved.contains("失败")) MaterialTheme.colorScheme.error else Quiet, modifier = Modifier.clickable { model.retry() })
                 }
-                IconButton(onClick = { editing = !editing; focus.clearFocus(); keyboard?.hide() }) { Icon(if (editing) Icons.Default.Done else Icons.Default.Edit, if (editing) "阅读" else "编辑") }
+                if (diaryEditor && editing) {
+                    IconButton(onClick = ::undoEdit, enabled = undo.isNotEmpty() && !leaving) { Icon(Icons.Default.Undo, "撤销") }
+                    IconButton(onClick = ::redoEdit, enabled = redo.isNotEmpty() && !leaving) { Icon(Icons.Default.Redo, "重做") }
+                }
+                IconButton(onClick = ::finishEditing, enabled = !leaving) { Icon(if (editing) Icons.Default.Done else Icons.Default.Edit, if (editing && diaryEditor) "完成编辑" else if (editing) "阅读" else "编辑") }
                 if (note.kind == "diary" && onDiaryRoad != null && (parentDiary?.diaryRoadEnabled == true || note.day == dayMillis())) IconButton(onClick = { leaveToRoad = true; leave() }, enabled = !leaving) {
                     Icon(Icons.Default.Route, "查看小路")
                 }
@@ -280,12 +316,15 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                             more = false
                             if (note.kind == "diary" && note.day != dayMillis()) daySettings = true else settings = true
                         })
-                        if (note.kind == "diary" && onDiaryRoad != null && parentDiary?.diaryRoadEnabled == true) DropdownMenuItem(text = { Text("查看小路") }, onClick = { more = false; leaveToRoad = true; leave() })
+                        if (note.kind == "diary" && onDiaryInbox != null) DropdownMenuItem(text = { Text("收纳箱") }, onClick = { more = false; scope.launch {
+                            runCatching { model.save(note); model.flush(note.id); keyboard?.hide(); focus.clearFocus(); onDiaryInbox(note.day) }
+                                .onFailure { error = it.message ?: "保存失败，请重试" }
+                        } })
                         if (isUnsentMoment) DropdownMenuItem(text = { Text("暂存到收纳箱") }, onClick = { more = false; leave() })
                         if (note.kind == "memory") DropdownMenuItem(text = { Text("移动到") }, enabled = !preparingMove, onClick = { more = false; openMovePicker() })
-                        DropdownMenuItem(text = { Text("标题目录") }, onClick = { more = false; tableOfContents = true })
+                        if (!diaryEditor) DropdownMenuItem(text = { Text("标题目录") }, onClick = { more = false; tableOfContents = true })
                         if (note.kind != "diary_moment") {
-                            DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
+                            if (!diaryEditor) DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
                             if (note.kind != "diary" || note.day != dayMillis()) DropdownMenuItem(text = { Text("导出这一篇") }, onClick = { more = false; scope.launch { model.save(note); model.flush(note.id); onExport(setOf(note.id)) } })
                             DropdownMenuItem(text = { Text(if (note.favorite) "取消收藏" else "收藏") }, onClick = { more = false; change(note.copy(favorite = !note.favorite)) })
                         }
@@ -298,13 +337,13 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                 DiaryMomentTimePanel(parentDiary, editorMoment(), model,
                     onOccurredAt = { change(note.copy(diaryOccurredAt = it)) },
                     onViewPosition = onMomentPosition?.let { view -> { _, _ ->
-                        model.save(note); keyboard?.hide(); focus.clearFocus(); view(note)
+                        persistEditor(note); keyboard?.hide(); focus.clearFocus(); view(note)
                     } })
                 if (isUnsentMoment && inboxMoment != null && note.diaryOccurredAt == null) TextButton(onClick = {
                     change(note.copy(diaryOccurredAt = inboxMoment.createdAt))
                 }) { Text("将暂存时间用作发生时间") }
             }
-                item("title") {
+                if (!diaryEditor) item("title") {
                     if (editing) BasicTextField(note.title, { change(note.copy(title = it)) }, Modifier.fillMaxWidth().onFocusChanged { titleFocused = it.isFocused }, textStyle = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = NoteInk), decorationBox = { inner -> Box {
                         if (note.kind == "diary") {
                             if (note.title.isBlank() && !titleFocused) Text("未命名", fontSize = 26.sp, color = Quiet.copy(alpha = .55f))
@@ -344,7 +383,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                                 lineHeight = 28.sp, fontWeight = if (heading || block.bold) FontWeight.SemiBold else FontWeight.Normal,
                                 fontStyle = if (block.italic) FontStyle.Italic else FontStyle.Normal, fontFamily = if (block.type == "code") FontFamily.Monospace else FontFamily.Default,
                                 textDecoration = if (block.checked) TextDecoration.LineThrough else TextDecoration.None)
-                            if (editing) BasicTextField(TextFieldValue(block.richText(), selections[block.id]?.let { TextRange(it.start.coerceIn(0, block.text.length), it.end.coerceIn(0, block.text.length)) } ?: TextRange(block.text.length), compositions[block.id]?.takeIf { it.end <= block.text.length }), { value -> selections[block.id] = value.selection; compositions[block.id] = value.composition; if (value.text != block.text) updateBlock(block.editText(value.text)) }, Modifier.weight(1f).onFocusChanged { if (it.isFocused) active = block.id }, textStyle = style,
+                            if (editing) BasicTextField(TextFieldValue(block.richText(), selections[block.id]?.let { TextRange(it.start.coerceIn(0, block.text.length), it.end.coerceIn(0, block.text.length)) } ?: TextRange(block.text.length), compositions[block.id]?.takeIf { it.end <= block.text.length }), { value -> selections[block.id] = value.selection; compositions[block.id] = value.composition; if (value.text != block.text) updateBlock(typingStyles[block.id]?.let { block.editText(value.text, it) } ?: block.editText(value.text)) }, Modifier.weight(1f).onFocusChanged { if (it.isFocused) active = block.id }, textStyle = style,
                                 decorationBox = { inner -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { if (block.text.isEmpty()) Text("开始记录…", style = style.copy(color = Quiet.copy(alpha = .5f))); inner() } })
                             else Text(block.richText(reveal), style = style, modifier = Modifier.weight(1f).clickable { editing = true; active = block.id })
                             if (editing && blocks.size > 1) IconButton(onClick = { val next = blocks.filter { it.id != block.id }; change(note.copy(document = encodeBlocks(next), text = blockPlainText(next))) }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "移除此段", modifier = Modifier.size(15.dp), tint = Quiet) }
@@ -353,7 +392,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                 }
                 item("append") { if (editing) TextButton(onClick = { insert(NoteBlock()) }) { Text("＋ 新段落") } }
             }
-            if (recording.running && recording.owner == note.id) SoftCard(color = Peach) {
+            if (recording.running && recording.owner == recordingOwner) SoftCard(color = Peach) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Mic, null, tint = MaterialTheme.colorScheme.error)
                     Text(" ${if (recording.paused) "已暂停" else "录音中"} ${audioTime(recording.elapsed)}", Modifier.weight(1f))
@@ -366,12 +405,22 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { addMenu = true }) { Icon(Icons.Default.Add, "插入图片或附件") }
                     IconButton(onClick = ::startRecording) { Icon(Icons.Default.MicNone, "录音") }
-                    IconButton(onClick = { if (undo.isNotEmpty()) { changed = true; redo.add(snapshot); val s = undo.removeAt(undo.lastIndex); snapshot = s; model.save(decodeNode(org.json.JSONObject(s))) } }, enabled = undo.isNotEmpty()) { Icon(Icons.Default.Undo, "撤销") }
-                    IconButton(onClick = { if (redo.isNotEmpty()) { changed = true; undo.add(snapshot); val s = redo.removeAt(redo.lastIndex); snapshot = s; model.save(decodeNode(org.json.JSONObject(s))) } }, enabled = redo.isNotEmpty()) { Icon(Icons.Default.Redo, "重做") }
+                    if (!diaryEditor) {
+                        IconButton(onClick = ::undoEdit, enabled = undo.isNotEmpty()) { Icon(Icons.Default.Undo, "撤销") }
+                        IconButton(onClick = ::redoEdit, enabled = redo.isNotEmpty()) { Icon(Icons.Default.Redo, "重做") }
+                    }
                     val current = blocks.find { it.id == active }
                     if (current != null && current.type !in setOf("image", "file", "audio", "link")) {
-                        IconButton(onClick = { val range = selections[current.id] ?: TextRange.Zero; updateBlock(current.toggleMark(range.start, range.end, "b")) }) { Icon(Icons.Default.FormatBold, "加粗选中文字或整段", tint = if (current.bold) Sky else Quiet) }
-                        IconButton(onClick = { val range = selections[current.id] ?: TextRange.Zero; updateBlock(current.toggleMark(range.start, range.end, "i")) }) { Icon(Icons.Default.FormatItalic, "倾斜选中文字或整段", tint = if (current.italic) Sky else Quiet) }
+                        fun formatMark(style: String) {
+                            val range = selections[current.id] ?: TextRange.Zero
+                            if (diaryEditor && range.collapsed) {
+                                val previous = typingStyles[current.id] ?: emptySet()
+                                typingStyles[current.id] = if (style in previous) previous - style else previous + style
+                            } else updateBlock(current.toggleMark(range.start, range.end, style))
+                        }
+                        IconButton(onClick = { formatMark("b") }) { Icon(Icons.Default.FormatBold, "加粗选中文字或整段", tint = if (current.bold || "b" in typingStyles[current.id].orEmpty()) Sky else Quiet) }
+                        IconButton(onClick = { formatMark("i") }) { Icon(Icons.Default.FormatItalic, "倾斜选中文字或整段", tint = if (current.italic || "i" in typingStyles[current.id].orEmpty()) Sky else Quiet) }
+                        if (diaryEditor) IconButton(onClick = { formatMark("h") }) { Icon(Icons.Default.Highlight, "高亮", tint = if ("h" in typingStyles[current.id].orEmpty()) Sky else Quiet) }
                         var format by remember { mutableStateOf(false) }
                         Box { TextButton(onClick = { format = true }) { Text("格式") }; DropdownMenu(format, { format = false }) {
                             listOf("text" to "正文", "heading1" to "大标题", "heading2" to "小标题", "bullet" to "列表", "check" to "勾选项", "quote" to "引用", "code" to "代码").forEach { (key, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { updateBlock(current.copy(type = key)); format = false }) }
@@ -464,7 +513,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     if (tableOfContents) SoftDialog("标题目录", { tableOfContents = false }) {
         val headings = shown.filter { it.type.startsWith("heading") }
         if (headings.isEmpty()) Text("将段落设为标题后，会在这里出现。", color = Quiet)
-        headings.forEach { block -> TextButton(onClick = { tableOfContents = false; scope.launch { listState.animateScrollToItem(shown.indexOf(block) + if (note.kind == "diary_moment") 3 else 2) } }) { Text(block.text.ifBlank { "未命名标题" }) } }
+        headings.forEach { block -> TextButton(onClick = { tableOfContents = false; scope.launch { listState.animateScrollToItem(shown.indexOf(block) + preambleItems) } }) { Text(block.text.ifBlank { "未命名标题" }) } }
     }
     if (templates) SoftDialog("追加模板", { templates = false }) {
         listOf("每日复盘" to listOf("今天发生了什么", "值得记住的事", "明天的小目标"), "读书摘录" to listOf("书名与出处", "摘录", "我的想法"), "旅行记录" to listOf("时间与地点", "旅途片段", "下次想做的事")).forEach { (title, headings) ->

@@ -38,6 +38,7 @@ object DiaryZipExport {
             var part = html(block.text.substring(from, to)).replace("\n", "<br>")
             if (block.bold || marks.any { it.style == "b" && it.start <= from && it.end >= to }) part = "<strong>$part</strong>"
             if (block.italic || marks.any { it.style == "i" && it.start <= from && it.end >= to }) part = "<em>$part</em>"
+            if (block.display == "highlight" || marks.any { it.style == "h" && it.start <= from && it.end >= to }) part = "<mark>$part</mark>"
             part
         }
     }
@@ -133,7 +134,7 @@ object DiaryZipExport {
                             sectionManifest.put("enabled", note.diaryRoadEnabled).put("theme", note.diaryRoadTheme).put("layout", note.diaryRoadLayout)
                                 .put("background", backgroundPath ?: JSONObject.NULL).put("sort", options.sort)
                                 .put("moments", JSONArray().apply { moments.forEach { moment ->
-                                    put(JSONObject().put("id", moment.id).put("title", moment.title).put("occurredAt", moment.occurrenceTime).put("sentAt", moment.sendTime)
+                                    put(JSONObject().put("id", moment.id).put("title", moment.title).put("tags", moment.tags).put("occurredAt", moment.occurrenceTime).put("sentAt", moment.sendTime)
                                         .put("occurredTime", time(moment.occurrenceTime)).put("sentTime", time(moment.sendTime)).put("blocks", blockRecords(decodeBlocks(moment.document, moment.text))))
                                 } })
                         } else sectionManifest.put("blocks", blockRecords(blocks))
@@ -157,6 +158,11 @@ object DiaryZipExport {
                             if (moments != null) moments.forEach { moment ->
                                 if (options.format == "html") append("<article><h2>${html(moment.title.ifBlank { "随记片段" })}</h2><small>发生：${html(time(moment.occurrenceTime))}<br>发送：${html(time(moment.sendTime))}</small>")
                                 else append("\n${if (options.format == "md") "## " else ""}${moment.title.ifBlank { "随记片段" }}\n发生：${time(moment.occurrenceTime)}\n发送：${time(moment.sendTime)}\n\n")
+                                val labels = TagRules.names(moment.tags).joinToString(" · ") { "#$it" }
+                                if (labels.isNotBlank()) {
+                                    if (options.format == "html") append("<p><small>${html(labels)}</small></p>")
+                                    else append("标签：$labels\n\n")
+                                }
                                 render(decodeBlocks(moment.document, moment.text))
                                 if (options.format == "html") append("</article>")
                             } else { if (options.format == "html") append("<article>"); render(blocks); if (options.format == "html") append("</article>") }

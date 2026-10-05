@@ -57,11 +57,11 @@ object SearchRules {
     fun noteText(node: NoteNode): String = listOf(node.title, node.text, node.tags,
         runCatching { node.blocks().joinToString(" ") { it.text } }.getOrDefault(""),
         runCatching { node.diaryMoments().joinToString("\n") { moment ->
-            moment.title + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
+            moment.title + "\n" + moment.tags + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
         } }.getOrDefault(""),
         runCatching { node.diaryInboxItems().joinToString("\n") { item ->
             (listOfNotNull(item.moment) + decodeDiaryMoments(item.road)).joinToString("\n") { moment ->
-                moment.title + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
+                moment.title + "\n" + moment.tags + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
             }
         } }.getOrDefault("")).joinToString("\n")
 

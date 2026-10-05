@@ -361,19 +361,20 @@ class InteractionRegressionTest {
         val first = NoteNode(id = "ui-diary-one", kind = "diary", day = dayMillis(LocalDate.now().minusDays(1)), title = "多选日记甲", text = "甲的正文")
         val second = NoteNode(id = "ui-diary-two", kind = "diary", day = dayMillis(LocalDate.now().minusDays(2)), title = "多选日记乙", text = "乙的正文")
         model.notes.putAll(listOf(first, second))
+        val selectableCount = model.notes.nodes().count(DiaryLibraryRules::isVisible)
         try {
             rule.activity.setContent { ModernShiJianApp() }
             rule.onNodeWithText("日记").performClick()
-            rule.onNodeWithText(first.title).performTouchInput { longClick() }
+            rule.onNodeWithTag("diary-row-${first.id}").performTouchInput { longClick() }
             rule.onNodeWithText("已选1").assertExists()
             rule.onNodeWithText("导出").assertDoesNotExist()
             assertTrue(rule.onNodeWithText("取消").getUnclippedBoundsInRoot().left < rule.onNodeWithText("删除").getUnclippedBoundsInRoot().left)
             rule.onNodeWithText("全选").performClick().assertIsSelected()
-            rule.onNodeWithText("已选2").assertExists()
+            rule.onNodeWithText("已选$selectableCount").assertExists()
             rule.onNodeWithText("全选").performClick().assertIsNotSelected()
             rule.onNodeWithText("已选0").assertExists()
             rule.onNodeWithText("删除").assertIsNotEnabled()
-            rule.onNodeWithText(first.title).performClick()
+            rule.onNodeWithTag("diary-row-${first.id}").performClick()
             rule.onNodeWithText("删除").performClick()
             rule.onNodeWithText("将这1条记录移到回收站").assertIsDisplayed()
             screenshot("diary-delete-confirmation")
@@ -397,9 +398,9 @@ class InteractionRegressionTest {
             rule.onNodeWithText("每个所选顶层分类", substring = true).assertDoesNotExist()
             screenshot("diary-export-options")
             back()
-            rule.onNodeWithText("已选择 2 天").assertExists()
+            rule.onNodeWithText("已选择 $selectableCount 天").assertExists()
             rule.onNodeWithText("取消").performClick()
-            rule.onNodeWithText(first.title).performTouchInput { longClick() }
+            rule.onNodeWithTag("diary-row-${first.id}").performTouchInput { longClick() }
             rule.onNodeWithText("删除").performClick()
             rule.onNode(hasText("删除") and hasAnyAncestor(isDialog())).performClick()
             rule.waitUntil(3_000) { runBlocking { model.notes.node(first.id)?.deletedAt != null } }

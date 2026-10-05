@@ -106,6 +106,16 @@ class NoteRulesTest {
         assertEquals(listOf(TextMark(1, 3, "b")), bold.editText("abef").textMarks())
         assertEquals(listOf(TextMark(1, 2, "b"), TextMark(4, 5, "b")), bold.toggleMark(2, 4, "b").textMarks())
     }
+    @Test fun typingStylesAndHighlightDoNotChangeSurroundingText() {
+        val original = NoteBlock(text = "abcd", marks = "0:4:b")
+        val edited = original.editText("abXYcd", setOf("h", "i"))
+        assertEquals(setOf(TextMark(0, 2, "b"), TextMark(4, 6, "b"), TextMark(2, 4, "h"), TextMark(2, 4, "i")), edited.textMarks().toSet())
+        assertTrue(edited.markdownText { it }.contains("<mark>"))
+        val highlighted = NoteBlock(text = "高亮文字").toggleMark(1, 3, "h")
+        assertEquals(listOf(TextMark(1, 3, "h")), highlighted.textMarks())
+        assertFalse(highlighted.italic)
+        assertEquals("highlight", NoteBlock().toggleMark(0, 0, "h").display)
+    }
     private fun folder(id: String, parent: String? = null) = NoteNode(id = id, kind = "folder", parentId = parent, title = id)
     @Test fun deepTreesAreIterativeAndMoveCannotIntroduceCycles() {
         val chain = (0..1200).map { folder("f$it", if (it == 0) null else "f${it - 1}") }

@@ -42,7 +42,11 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
         if (busy != null) return
         busy = item.id
         scope.launch {
-            runCatching { model.publishDiaryMoment(model.currentDiary(parent.day ?: dayMillis()), moment, moment.occurredAt) }
+            runCatching {
+                val current = model.currentDiary(parent.day ?: dayMillis())
+                if (item.originalStatus == "editing") model.completeDiaryMomentEdit(current, moment)
+                else model.publishDiaryMoment(current, moment, moment.occurredAt)
+            }
                 .onFailure { error = it.message ?: "发送失败，内容仍在收纳箱" }
             busy = null
         }
@@ -63,7 +67,7 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
                     SoftCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(dateText(parent.day ?: parent.createdAt), fontSize = 13.sp, color = Quiet, modifier = Modifier.weight(1f))
-                            Text(when (item.status) { "draft" -> "草稿"; "retracted" -> "撤回"; "deleted" -> "已删除"; else -> "整条小路" }, color = Sky, fontSize = 12.sp)
+                            Text(when (item.status) { "draft" -> if (item.originalStatus == "editing") "修改草稿" else "草稿"; "retracted" -> "撤回"; "deleted" -> "已删除"; else -> "整条小路" }, color = Sky, fontSize = 12.sp)
                         }
                         if (item.status == "road") {
                             val moments = runCatching { parent.copy(diaryRoad = item.road).diaryMoments() }.getOrDefault(emptyList())
@@ -76,6 +80,7 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
                             }
                         } else item.moment?.let { moment ->
                             Text(DiaryLibraryRules.momentPreview(moment), maxLines = 5, overflow = TextOverflow.Ellipsis)
+                            DiaryMomentTagsPreview(moment.tags)
                             val blocks = runCatching { decodeBlocks(moment.document, moment.text) }.getOrDefault(emptyList())
                             val mediaCount = blocks.count { it.type in setOf("image", "audio", "file", "link") }
                             if (mediaCount > 0) Text("包含 $mediaCount 项素材 · 编辑可查看完整顺序", color = Quiet, fontSize = 12.sp)
@@ -90,7 +95,7 @@ fun DiaryInboxScreen(model: WorkspaceModel, day: Long?, onBack: () -> Unit, onEd
                                     TextButton(onClick = { permanent = parent to item }, enabled = busy == null) { Text("彻底删除", color = MaterialTheme.colorScheme.error) }
                                 } else {
                                     TextButton(onClick = { item.asNote(parent)?.let(onEdit) }, enabled = busy == null) { Text("继续编辑") }
-                                    TextButton(onClick = { send(parent, item) }, enabled = busy == null && moment.asNote(parent).hasNoteContent()) { Text(if (busy == item.id) "正在发送…" else if (item.status == "retracted") "重新发送" else "发送") }
+                                    TextButton(onClick = { send(parent, item) }, enabled = busy == null && (item.originalStatus == "editing" || moment.asNote(parent).hasNoteContent())) { Text(if (busy == item.id) "正在保存…" else if (item.originalStatus == "editing") "完成修改" else if (item.status == "retracted") "重新发送" else "发送") }
                                     TextButton(onClick = { act { model.deleteDiaryInbox(parent, item.id) } }, enabled = busy == null) { Text("删除") }
                                 }
                             }

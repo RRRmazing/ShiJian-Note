@@ -104,6 +104,64 @@ class DiaryEditorPublishInteractionTest {
         } finally { cleanup(model, parent) }
     }
 
+    @Test fun draftOnlyHistoryOpensBlankRoadAndSummaryUntilExplicitResume() {
+        val model = model()
+        val parent = parent(model)
+        val draft = DiaryMoment(text = "仅在收纳箱中的秘密草稿", tags = "草稿标签")
+        val preferences = appPreferences(rule.activity)
+        val previousCalendar = preferences.getBoolean("diaryCalendar", false)
+        try {
+            preferences.edit().putBoolean("diaryCalendar", false).commit()
+            model.saveDiaryDraft(parent, draft)
+            runBlocking { model.flush(parent.id) }
+            rule.activity.setContent { ModernShiJianApp() }
+            rule.onNodeWithText("日记", substring = false).performClick()
+            rule.onNodeWithTag("diary-row-${parent.id}").performScrollTo().performClick()
+            rule.onNodeWithText(draft.text).assertDoesNotExist()
+            rule.onNodeWithContentDescription("这一天的结语").performClick()
+            rule.onNodeWithText(draft.text).assertDoesNotExist()
+            assertFalse(model.currentDiary(parent.day!!).hasDiaryContent())
+            assertEquals(draft, model.currentDiary(parent.day!!).diaryInboxItems().single().moment)
+            rule.onNodeWithContentDescription("更多").performClick()
+            rule.onNodeWithText("收纳箱").performClick()
+            rule.onNodeWithContentDescription("返回").performClick()
+            rule.onNodeWithContentDescription("完成编辑").assertExists()
+            rule.onNodeWithText(draft.text).assertDoesNotExist()
+            rule.onNodeWithContentDescription("更多").performClick()
+            rule.onNodeWithText("收纳箱").performClick()
+            rule.onNodeWithText("继续编辑").performScrollTo().performClick()
+            rule.onNode(hasSetTextAction() and hasText(draft.text)).assertExists()
+        } finally {
+            preferences.edit().putBoolean("diaryCalendar", previousCalendar).commit()
+            cleanup(model, parent)
+        }
+    }
+
+    @Test fun summaryUsesSessionUndoAndKeepsOldTitleWithoutShowingTitleOrVersionMenu() {
+        val model = model()
+        val parent = parent(model)
+        val original = parent.copy(title = "旧版本标题必须保留", text = "旧正文", document = encodeBlocks(listOf(NoteBlock(text = "旧正文"))))
+        try {
+            runBlocking { model.notes.put(original); model.nodes.first { nodes -> nodes.any { it.id == original.id && it.text == "旧正文" } } }
+            rule.activity.setContent { YouthTheme { RichNoteEditor(original, model, true, onBack = {}, onOpen = {}, onExport = {}) } }
+            rule.onNodeWithText(original.title).assertDoesNotExist()
+            rule.onNode(hasSetTextAction() and hasText("旧正文")).performTextReplacement("本次编辑内容")
+            rule.onNodeWithContentDescription("撤销").performClick()
+            rule.onNode(hasSetTextAction() and hasText("旧正文")).assertExists()
+            rule.onNodeWithContentDescription("重做").performClick()
+            rule.onNode(hasSetTextAction() and hasText("本次编辑内容")).assertExists()
+            rule.onNodeWithContentDescription("完成编辑").performClick()
+            rule.onNodeWithText("本次编辑内容").assertExists()
+            rule.onNodeWithContentDescription("更多").performClick()
+            rule.onNodeWithText("标题目录").assertDoesNotExist()
+            rule.onNodeWithText("历史版本").assertDoesNotExist()
+            rule.onNodeWithText("查看小路").assertDoesNotExist()
+            runBlocking { model.flush(parent.id) }
+            assertEquals(original.title, model.currentDiary(parent.day!!).title)
+            assertEquals("本次编辑内容", model.currentDiary(parent.day!!).text)
+        } finally { cleanup(model, parent) }
+    }
+
     @Test fun positionPreviewReturnsToTheSameRichDraftWithoutPublishing() {
         val model = model()
         val parent = parent(model)
@@ -124,9 +182,11 @@ class DiaryEditorPublishInteractionTest {
             runBlocking { model.flush(parent.id) }
             rule.activity.setContent { ModernShiJianApp() }
             rule.onNodeWithText("日记", substring = false).performClick()
-            rule.onNodeWithText("收纳箱 ·", substring = true).performScrollTo().performClick()
+            rule.onNodeWithTag("diary-row-${parent.id}").performScrollTo().performClick()
+            rule.onNodeWithContentDescription("小路设置").performClick()
+            rule.onNodeWithText("收纳箱").performClick()
             rule.onNodeWithText("继续编辑").performScrollTo().performClick()
-            rule.onNodeWithText("时间与位置").performClick()
+            rule.onNodeWithContentDescription("发生时间").performClick()
             rule.onNodeWithText("在小路中查看").performScrollTo().performClick()
             rule.onNodeWithText("在小路中查看位置").assertExists()
             rule.onNodeWithText("前一条：", substring = true).assertExists()

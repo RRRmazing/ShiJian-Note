@@ -99,7 +99,39 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
                             val last = notes.versions(id).firstOrNull()
                             if (last == null || System.currentTimeMillis() - last.createdAt > 30_000) notes.version(NoteVersion(nodeId = id, snapshot = jsonObject(old).toString()))
                         }
-                        if (old?.deletedAt == null) notes.put(if (snapshot.kind != "diary" && snapshot.parentId == null && !MemorySpaces.isRoot(snapshot.id)) snapshot.copy(parentId = MemorySpaces.WORK_ID) else snapshot)
+                        val liveDay = if (snapshot.kind == "diary" && (old == null || old.deletedAt != null) && snapshot.day != null) notes.diary(snapshot.day) else null
+                        val removedDiary = snapshot.kind == "diary" && (old?.deletedAt != null || diarySnapshots[id]?.deletedAt != null || liveDay != null && liveDay.id != id)
+                        if (removedDiary) {
+                            // An editor can autosave while trash/restore is awaiting Room. Never consume
+                            // that late draft as a successful write to a removed parent.
+                            if (old?.deletedAt != null) diarySnapshots[id] = old
+                            else if (liveDay != null && liveDay.id != id) diarySnapshots[id] = snapshot.copy(deletedAt = System.currentTimeMillis())
+                            if (liveDay != null) diarySnapshots.putIfAbsent(liveDay.id, liveDay)
+                            val recoveryOwner = synchronized(this@WorkspaceModel) { currentDiary(snapshot.day ?: error("日记缺少所属日期")) }
+                            notes.version(NoteVersion(nodeId = recoveryOwner.id, snapshot = jsonObject(snapshot).toString()))
+                            synchronized(this@WorkspaceModel) {
+                                val destination = currentDiary(snapshot.day ?: error("日记缺少所属日期"))
+                                val saved = destination.diaryInboxItems()
+                                val incoming = snapshot.diaryInboxItems().map { item ->
+                                    val original = item.moment
+                                    val moved = if (item.originalStatus == "editing" && original != null) saved.firstOrNull {
+                                        it.originalStatus != "editing" && it.status == "draft" && it.editingOf == original.id
+                                    } else null
+                                    if (moved != null) item.copy(id = moved.id, originalStatus = "draft", editingOf = original!!.id,
+                                        moment = original.copy(id = moved.moment?.id ?: moved.id), recordingOwner = moved.recordingOwner.ifBlank { item.recordingOwner })
+                                    else item
+                                }
+                                val detached = snapshot.copy(diaryInbox = encodeDiaryInbox(incoming)).detachDiaryEdits(
+                                    incoming.filter { it.originalStatus == "editing" }.mapNotNull { it.moment?.id }.toSet())
+                                val retained = mergeDiaryInboxPreservingConflicts(saved, detached.diaryInboxItems())
+                                if (retained != saved) {
+                                    enqueueDiary(destination.copy(diaryInbox = encodeDiaryInbox(retained)))
+                                    retained.mapNotNull { it.moment }.forEach { moment -> momentParents["moment-${moment.id}"] = destination.id }
+                                }
+                            }
+                        } else if (old?.deletedAt == null) {
+                            notes.put(if (snapshot.kind != "diary" && snapshot.parentId == null && !MemorySpaces.isRoot(snapshot.id)) snapshot.copy(parentId = MemorySpaces.WORK_ID) else snapshot)
+                        }
                     }
                 } finally { gate.unlock() }
                 if (pending.remove(id, snapshot)) {
@@ -167,8 +199,102 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
     @Synchronized fun getDiaryMomentNote(day: Long, id: String): NoteNode? {
         val parent = currentDiary(day)
         val key = id.removePrefix("moment-")
-        return parent.diaryMoments().firstOrNull { it.id == key }?.asNote(parent)
-            ?: parent.diaryInboxItems().firstOrNull { it.id == key || it.moment?.id == key }?.asNote(parent)
+        return parent.diaryInboxItems().firstOrNull { it.originalStatus == "editing" && it.status == "draft" && it.moment?.id == key }?.asNote(parent)
+            ?: parent.diaryInboxItems().firstOrNull { it.editingOf == key && it.originalStatus != "editing" && it.status == "draft" }?.asNote(parent)
+            ?: parent.diaryMoments().firstOrNull { it.id == key }?.asNote(parent)
+            ?: parent.diaryInboxItems().firstOrNull { it.id == key || it.moment?.id == key || it.editingOf == key }?.asNote(parent)
+    }
+    @Synchronized fun beginDiaryMomentEdit(parent: NoteNode, momentId: String): NoteNode? {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再编辑" }
+        val current = diaryParent(parent)
+        val key = momentId.removePrefix("moment-")
+        val existing = current.diaryInboxItems().firstOrNull { it.originalStatus == "editing" && it.status == "draft" && it.moment?.id == key }
+        if (existing != null) return existing.asNote(current)
+        val original = current.diaryMoments().firstOrNull { it.id == key } ?: return null
+        val preferred = "editing-$key"
+        val id = if (current.diaryInboxItems().any { it.id == preferred }) "$preferred-${UUID.randomUUID()}" else preferred
+        val item = DiaryInboxItem(id = id, originalStatus = "editing", moment = original, editingOf = original.id,
+            recordingOwner = "edit-$id", originalMoment = jsonObject(original).toString())
+        enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems() + item)))
+        momentParents["moment-$key"] = current.id
+        return original.asNote(current)
+    }
+    @Synchronized fun saveDiaryMomentEdit(parent: NoteNode, moment: DiaryMoment): DiaryInboxItem {
+        check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
+        var current = diaryParent(parent)
+        val original = current.diaryMoments().firstOrNull { it.id == moment.id }
+        val activeEdit = current.diaryInboxItems().any { it.status == "draft" && it.originalStatus == "editing" && it.moment?.id == moment.id }
+        val orphan = current.diaryInboxItems().firstOrNull { it.status == "draft" && it.editingOf == moment.id && it.originalStatus != "editing" }
+        if (orphan != null && !activeEdit) {
+            val changed = orphan.copy(moment = moment.copy(id = orphan.moment?.id ?: orphan.id,
+                createdAt = orphan.moment?.createdAt ?: moment.createdAt, sentAt = orphan.moment?.sentAt), updatedAt = System.currentTimeMillis())
+            enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().map { if (it.id == orphan.id) changed else it })))
+            return changed
+        }
+        if (original == null) {
+            if (current.diaryInboxItems().any { it.status == "draft" && it.originalStatus != "editing" && it.moment?.id == moment.id }) {
+                return saveDiaryDraft(current, moment)
+            }
+            current = current.detachDiaryEdits(setOf(moment.id))
+            val detached = current.diaryInboxItems().firstOrNull { it.editingOf == moment.id && it.status == "draft" }
+            val id = detached?.moment?.id ?: UUID.randomUUID().toString()
+            val changed = (detached ?: DiaryInboxItem(id = id, editingOf = moment.id)).copy(moment = moment.copy(id = id), originalStatus = "draft",
+                updatedAt = System.currentTimeMillis())
+            enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().filterNot { it.id == changed.id } + changed)))
+            return changed
+        }
+        beginDiaryMomentEdit(current, moment.id)
+        current = diaryParent(current)
+        val previous = current.diaryInboxItems().first { it.originalStatus == "editing" && it.status == "draft" && it.moment?.id == moment.id }
+        val changed = previous.copy(moment = moment.copy(createdAt = original.createdAt, sentAt = original.sentAt), updatedAt = System.currentTimeMillis())
+        enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().map { if (it.id == previous.id) changed else it })))
+        return changed
+    }
+    suspend fun completeDiaryMomentEdit(parent: NoteNode, moment: DiaryMoment): DiaryMoment = diaryPublishGate.withLock {
+        val staged = synchronized(this) {
+            val edit = saveDiaryMomentEdit(parent, moment)
+            val recording = RecordingService.state.value
+            check(!recording.running || recording.owner != edit.recordingOwner.takeIf { it.isNotBlank() }.orEmpty()) { "请先结束录音，再完成编辑" }
+            val current = diaryParent(parent)
+            val original = current.diaryMoments().firstOrNull { it.id == moment.id }
+            val baseline = edit.originalMoment.takeIf { it.isNotBlank() }?.let { decodeDiaryMoment(JSONObject(it)) }
+            if (original == null || edit.originalStatus != "editing" || baseline != null && !sameDiaryMomentState(original, baseline)) {
+                enqueueDiary(current.detachDiaryEdits(setOf(moment.id)))
+                Triple(current, edit, null)
+            } else {
+                val updated = moment.copy(createdAt = original.createdAt, sentAt = original.sentAt,
+                    occurredAt = moment.occurredAt ?: original.sentAt)
+                enqueueDiary(current.copy(diaryRoad = encodeDiaryMoments(sortedDiaryMoments(current.diaryMoments().map { if (it.id == updated.id) updated else it })),
+                    diaryInbox = encodeDiaryInbox(current.diaryInboxItems().filterNot { it.id == edit.id })))
+                Triple(current, edit, updated)
+            }
+        }
+        val updated = staged.third
+        if (updated == null) {
+            flush(staged.first.id)
+            error("原片段已变化或移出小路，修改已保存在收纳箱，可作为新片段发送")
+        }
+        try {
+            gate.withLock { notes.version(NoteVersion(nodeId = staged.first.id, snapshot = jsonObject(staged.first).toString())) }
+            flush(staged.first.id)
+            updated
+        } catch (failure: Exception) {
+            synchronized(this) {
+                val current = diaryParent(staged.first)
+                val live = current.diaryMoments().firstOrNull { it.id == updated.id }
+                if (live != null && sameDiaryMomentState(live, updated)) {
+                    val old = staged.first.diaryMoments().first { it.id == updated.id }
+                    enqueueDiary(current.copy(diaryRoad = encodeDiaryMoments(current.diaryMoments().map { if (it.id == old.id) old else it }),
+                        diaryInbox = encodeDiaryInbox(current.diaryInboxItems().filterNot { it.id == staged.second.id } + staged.second)))
+                } else {
+                    val id = UUID.randomUUID().toString()
+                    val retained = staged.second.copy(id = id, originalStatus = "draft", editingOf = updated.id,
+                        moment = moment.copy(id = id), updatedAt = System.currentTimeMillis())
+                    enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems() + retained)))
+                }
+            }
+            throw failure
+        }
     }
     @Synchronized fun saveDiaryDraft(parent: NoteNode, moment: DiaryMoment): DiaryInboxItem {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
@@ -179,7 +305,11 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
             .copy(moment = moment.copy(createdAt = previous?.moment?.createdAt ?: moment.createdAt,
                 sentAt = previous?.moment?.sentAt), updatedAt = System.currentTimeMillis())
         momentParents["moment-${moment.id}"] = current.id
-        val next = items.filterNot { it.moment?.id == moment.id } + if (moment.hasContent()) listOf(saved) else emptyList()
+        val hasInput = moment.hasContent() || moment.occurredAt != null
+        val owner = saved.recordingOwner.ifBlank { "moment-${moment.id}" }
+        val recorder = RecordingService.state.value
+        val hasRecording = !hasInput && (recorder.running && recorder.owner == owner || RecordingService.inbox(getApplication<Application>(), owner).isNotEmpty())
+        val next = items.filterNot { it.moment?.id == moment.id } + if (hasInput || hasRecording) listOf(saved) else emptyList()
         enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(next)))
         return saved
     }
@@ -187,6 +317,9 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再发送" }
         require(moment.hasContent()) { "请先写下片段或添加素材" }
         val previous = parent.diaryMoments().firstOrNull { it.id == moment.id }
+        val recordingOwner = parent.diaryInboxItems().firstOrNull { it.moment?.id == moment.id }?.recordingOwner?.takeIf { it.isNotBlank() } ?: "moment-${moment.id}"
+        val recording = RecordingService.state.value
+        check(!recording.running || recording.owner != recordingOwner) { "请先结束录音，再发送片段" }
         val sent = previous?.sentAt ?: System.currentTimeMillis()
         val published = moment.copy(createdAt = previous?.createdAt ?: moment.createdAt,
             sentAt = sent, occurredAt = occurredAt ?: moment.occurredAt ?: sent)
@@ -226,7 +359,7 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
     }
     private fun moveDiaryMomentToInbox(parent: NoteNode, momentId: String, status: String) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
-        val current = diaryParent(parent)
+        val current = diaryParent(parent).detachDiaryEdits(setOf(momentId))
         val moment = current.diaryMoments().firstOrNull { it.id == momentId } ?: return
         val now = System.currentTimeMillis()
         val item = DiaryInboxItem(id = moment.id, status = status, originalStatus = "published", moment = moment,
@@ -236,7 +369,8 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
     }
     @Synchronized fun archiveDiaryRoad(parent: NoteNode) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再设置" }
-        val current = diaryParent(parent)
+        val before = diaryParent(parent)
+        val current = before.detachDiaryEdits(before.diaryMoments().map { it.id }.toSet())
         val now = System.currentTimeMillis()
         val archived = DiaryInboxItem(status = "road", originalStatus = "road", road = current.diaryRoad,
             roadTheme = current.diaryRoadTheme, roadBackground = current.diaryRoadBackground, roadLayout = current.diaryRoadLayout,
@@ -263,9 +397,12 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
                 diaryRoad = encodeDiaryMoments(sortedDiaryMoments((current.diaryMoments() + moment).distinctBy { it.id })),
                 diaryInbox = encodeDiaryInbox(remainder)))
         } else {
-            val restored = item.copy(status = if (item.status == "deleted") item.originalStatus else item.status,
+            val restoredStatus = if (item.status != "deleted") item.status else if (item.originalStatus == "editing") "draft" else item.originalStatus
+            val restored = item.copy(status = restoredStatus,
                 updatedAt = System.currentTimeMillis(), deletedAt = null, expiresAt = null)
-            enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(remainder + restored)))
+            val next = current.copy(diaryInbox = encodeDiaryInbox(remainder + restored))
+            enqueueDiary(if (restored.originalStatus == "editing" && current.diaryMoments().none { it.id == restored.moment?.id })
+                next.detachDiaryEdits(setOf(restored.moment?.id.orEmpty())) else next)
         }
     }
     fun restoreDiaryInboxItem(parent: NoteNode, itemId: String) = restoreDiaryInbox(parent, itemId)
@@ -274,17 +411,20 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         val current = diaryParent(parent)
         val item = current.diaryInboxItems().firstOrNull { it.id == itemId && it.moment != null } ?: return null
         val editable = item.copy(status = if (item.status == "deleted") "draft" else item.status,
-            originalStatus = if (item.status == "deleted") "draft" else item.originalStatus,
+            originalStatus = if (item.status == "deleted" && item.originalStatus != "editing") "draft" else item.originalStatus,
             deletedAt = null, expiresAt = null, updatedAt = System.currentTimeMillis())
-        enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().map { if (it.id == itemId) editable else it })))
-        return editable.asNote(current)
+        val edited = current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().map { if (it.id == itemId) editable else it }))
+        val next = if (editable.originalStatus == "editing" && current.diaryMoments().none { it.id == editable.moment?.id })
+            edited.detachDiaryEdits(setOf(editable.moment?.id.orEmpty())) else edited
+        enqueueDiary(next)
+        return next.diaryInboxItems().firstOrNull { it.id == itemId || it.editingOf == editable.moment?.id && it.status == "draft" }?.asNote(next)
     }
     @Synchronized fun deleteDiaryInbox(parent: NoteNode, itemId: String) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再删除" }
         val current = diaryParent(parent)
         val now = System.currentTimeMillis()
         enqueueDiary(current.copy(diaryInbox = encodeDiaryInbox(current.diaryInboxItems().map { item ->
-            if (item.id != itemId || item.status == "deleted") item else item.copy(status = "deleted", originalStatus = item.status,
+            if (item.id != itemId || item.status == "deleted") item else item.copy(status = "deleted", originalStatus = if (item.originalStatus == "editing") "editing" else item.status,
                 updatedAt = now, deletedAt = now, expiresAt = expiryAt(now))
         })))
     }
@@ -343,38 +483,60 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
     @Synchronized fun restoreDiarySnapshot(snapshot: NoteNode) {
         check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再保存" }
         val current = currentDiary(snapshot.day ?: error("日记缺少所属日期"))
-        enqueueDiary(snapshot.copy(id = current.id, createdAt = current.createdAt))
+        val restored = snapshot.copy(id = current.id, createdAt = current.createdAt,
+            diaryInbox = encodeDiaryInbox(mergeDiaryInboxPreservingConflicts(current.diaryInboxItems(), snapshot.diaryInboxItems())))
+        val conflicts = restored.diaryInboxItems().filter { item -> item.originalStatus == "editing" && item.moment != null &&
+            restored.diaryMoments().firstOrNull { it.id == item.moment.id }?.let { original ->
+                item.originalMoment.isNotBlank() && !sameDiaryMomentState(original, decodeDiaryMoment(JSONObject(item.originalMoment)))
+            } != false }.mapNotNull { it.moment?.id }.toSet()
+        enqueueDiary(restored.detachDiaryEdits(conflicts))
     }
     /** Persist an inbox identity before the recorder can outlive its editor or process. */
-    suspend fun registerDiaryRecording(note: NoteNode) {
-        if (note.kind != "diary_moment") return
-        val owner = synchronized(this) {
+    @Synchronized fun diaryRecordingOwner(note: NoteNode): String {
+        if (note.kind != "diary_moment" || note.day == null) return note.id
+        val parent = currentDiary(note.day)
+        val key = note.id.removePrefix("moment-")
+        val item = parent.diaryInboxItems().firstOrNull { it.status == "draft" && it.originalStatus == "editing" && it.moment?.id == key }
+            ?: parent.diaryInboxItems().firstOrNull { it.moment?.id == key || it.editingOf == key && it.status == "draft" }
+        return item?.recordingOwner?.takeIf { it.isNotBlank() } ?: note.id
+    }
+    suspend fun registerDiaryRecording(note: NoteNode): String {
+        if (note.kind != "diary_moment") return note.id
+        val registered = synchronized(this) {
             check(!replacingWorkspace.get()) { "正在恢复备份，请稍后再录音" }
             val parent = findDiary(note.day ?: error("片段缺少所属日期")) ?: newNote("diary", day = note.day).let { fresh ->
                 if (note.parentId != null && (nodes.value + diarySnapshots.values).none { it.id == note.parentId && it.deletedAt != null }) fresh.copy(id = note.parentId) else fresh
             }
             val moment = note.asDiaryMoment()
-            val exists = parent.diaryMoments().any { it.id == moment.id } || parent.diaryInboxItems().any { it.moment?.id == moment.id }
-            val registered = if (exists) parent else parent.copy(diaryInbox = encodeDiaryInbox(parent.diaryInboxItems() +
-                DiaryInboxItem(id = moment.id, moment = moment, createdAt = moment.createdAt)))
+            val editing = parent.diaryInboxItems().firstOrNull { it.originalStatus == "editing" && it.status == "draft" && it.moment?.id == moment.id }
+            val item = editing ?: parent.diaryInboxItems().firstOrNull { it.moment?.id == moment.id || it.editingOf == moment.id && it.status == "draft" }
+            val exists = parent.diaryMoments().any { it.id == moment.id } || item != null
+            val owner = item?.recordingOwner?.takeIf { it.isNotBlank() } ?: note.id
+            val next = if (exists) parent else parent.copy(diaryInbox = encodeDiaryInbox(parent.diaryInboxItems() +
+                DiaryInboxItem(id = moment.id, moment = moment, createdAt = moment.createdAt, recordingOwner = owner)))
             momentParents[note.id] = parent.id
-            enqueue(registered)
-            parent.id
+            enqueue(next)
+            parent.id to owner
         }
-        flush(owner)
+        flush(registered.first)
+        return registered.second
     }
     suspend fun recoverDiaryRecordings() {
         val context = getApplication<Application>()
-        for (source in notes.nodes().filter { it.kind == "diary" }) {
+        val sources = notes.nodes().filter { it.kind == "diary" }
+        for (source in sources) {
             diarySnapshots.putIfAbsent(source.id, source)
-            val moments = (source.diaryMoments() + source.diaryInboxItems().flatMap { listOfNotNull(it.moment) + decodeDiaryMoments(it.road) }).distinctBy { it.id }
+            val moments = (source.diaryMoments() + source.diaryInboxItems().flatMap { item ->
+                listOfNotNull(item.moment).filter { item.originalStatus != "editing" && (item.recordingOwner.isBlank() || item.recordingOwner == "moment-${it.id}") } + decodeDiaryMoments(item.road)
+            }).distinctBy { it.id }
             for (moment in moments) {
                 val owner = "moment-${moment.id}"
                 val audio = RecordingService.inbox(context, owner)
                 val recorder = RecordingService.state.value
                 val active = recorder.running && recorder.owner == owner
-                val originalDraft = source.diaryInboxItems().firstOrNull { it.moment?.id == moment.id }
-                val emptyPlaceholder = !moment.hasContent() && !active && audio.isEmpty() && originalDraft?.status == "draft"
+                val originalDraft = source.diaryInboxItems().firstOrNull { it.moment?.id == moment.id && it.originalStatus != "editing" }
+                val emptyPlaceholder = !moment.hasContent() && moment.occurredAt == null && !active && audio.isEmpty() && originalDraft?.status == "draft" &&
+                    originalDraft.editingOf.isBlank() && originalDraft.originalMoment.isBlank()
                 if (audio.isEmpty() && !emptyPlaceholder) continue
                 val updated = synchronized(this) {
                     val current = pending[source.id] ?: diarySnapshots[source.id] ?: source
@@ -391,6 +553,34 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     flush(source.id)
                 }
+                audio.forEach { RecordingService.removeInbox(context, android.net.Uri.parse(it.uri).path.orEmpty()) }
+            }
+            for (item in source.diaryInboxItems().filter { it.moment != null && it.recordingOwner.isNotBlank() && it.recordingOwner != "moment-${it.moment.id}" }) {
+                val audio = RecordingService.inbox(context, item.recordingOwner)
+                if (audio.isEmpty()) continue
+                // Withdrawals and whole-diary deletion can move this edit to a new item or date carrier.
+                // Resolve its persistent recording owner again before consuming the service inbox.
+                val updated = synchronized(this) {
+                    val candidates = (nodes.value + sources + diarySnapshots.values + pending.values).associateBy { it.id }.values
+                    val current = candidates.firstOrNull { parent -> parent.kind == "diary" && parent.diaryInboxItems().any { it.recordingOwner == item.recordingOwner } }
+                    val actualItem = current?.diaryInboxItems()?.firstOrNull { it.recordingOwner == item.recordingOwner && it.moment != null }
+                    if (current == null || actualItem == null) null else {
+                        val next = current.withDiaryInboxRecording(actualItem.id, audio)
+                        if (current.deletedAt == null) enqueue(next)
+                        next
+                    }
+                } ?: continue
+                if (updated.deletedAt != null) {
+                    val saved = gate.withLock { db.withTransaction {
+                        val latest = notes.node(updated.id)
+                        val actualItem = latest?.diaryInboxItems()?.firstOrNull { it.recordingOwner == item.recordingOwner && it.moment != null }
+                        if (latest == null || actualItem == null) false else {
+                            val next = latest.withDiaryInboxRecording(actualItem.id, audio).copy(updatedAt = maxOf(System.currentTimeMillis(), latest.updatedAt + 1))
+                            notes.put(next); diarySnapshots[next.id] = next; true
+                        }
+                    } }
+                    if (!saved) continue
+                } else flush(updated.id)
                 audio.forEach { RecordingService.removeInbox(context, android.net.Uri.parse(it.uri).path.orEmpty()) }
             }
         }
@@ -459,8 +649,9 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         db.withTransaction { current.filter { it.id in targets && it.deletedAt == null }.forEach {
             if (it.kind == "diary" && it.diaryInbox.isNotBlank()) {
                 notes.version(NoteVersion(nodeId = it.id, snapshot = jsonObject(it).toString()))
+                val detached = it.detachDiaryEdits(it.diaryInboxItems().filter { item -> item.originalStatus == "editing" }.mapNotNull { item -> item.moment?.id }.toSet())
                 val carrier = NoteNode(id = UUID.randomUUID().toString(), kind = "diary", day = it.day,
-                    diaryInbox = it.diaryInbox, diaryRoadTheme = it.diaryRoadTheme, diaryRoadLayout = it.diaryRoadLayout,
+                    diaryInbox = detached.diaryInbox, diaryRoadTheme = it.diaryRoadTheme, diaryRoadLayout = it.diaryRoadLayout,
                     updatedAt = maxOf(time, it.updatedAt + 1))
                 notes.put(carrier)
                 diarySnapshots[carrier.id] = carrier
@@ -506,12 +697,14 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
                 else -> node.diaryInbox
             }
             val restored = node.copy(kind = if (conflict) "memory" else node.kind, deletedAt = null, deleteGroup = null, parentId = destination,
-                diaryTrashExpiresAt = null, updatedAt = maxOf(System.currentTimeMillis(), node.updatedAt + 1),
+                diaryTrashExpiresAt = null, updatedAt = maxOf(System.currentTimeMillis(), node.updatedAt + 1, (placeholder?.updatedAt ?: 0) + 1),
                 diaryInbox = restoredInbox)
             if (placeholder != null && node.kind == "diary") {
                 // Inbox edits made while the diary was in trash keep their recovery history and media references.
                 notes.versions(placeholder.id).forEach { version -> notes.version(version.copy(nodeId = restored.id)) }
-                notes.removeVersions(listOf(placeholder.id)); notes.remove(listOf(placeholder.id)); diarySnapshots.remove(placeholder.id)
+                notes.removeVersions(listOf(placeholder.id)); notes.remove(listOf(placeholder.id))
+                // Keep a tombstone until the old Room emission disappears, and redirect any delayed autosave.
+                diarySnapshots[placeholder.id] = placeholder.copy(deletedAt = System.currentTimeMillis(), updatedAt = restored.updatedAt)
                 restored.diaryInboxItems().flatMap { listOfNotNull(it.moment) + decodeDiaryMoments(it.road) }.forEach { moment -> momentParents["moment-${moment.id}"] = restored.id }
             }
             notes.put(if (conflict) restored.flattenDiaryRoad() else restored)
@@ -600,7 +793,9 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
         val copies = mutableMapOf<String, NoteBlock>()
         val result = all.map { node ->
             if (node.id !in targets || node.deletedAt != null || node.kind == "folder" ||
-                TreeRules.imagePreference(node, all, true, imageStorageDefault(context)) != "copy") return@map node
+                TreeRules.imagePreference(node, all, true, imageStorageDefault(context)) != "copy") {
+                return@map node
+            }
             suspend fun reconcile(blocks: List<NoteBlock>): List<NoteBlock> = blocks.map { block ->
                 if (block.type != "image" || block.owned) block
                 else runCatching {
@@ -621,7 +816,8 @@ class WorkspaceModel(app: Application) : AndroidViewModel(app) {
                 return moment.copy(document = encodeBlocks(next), text = blockPlainText(next))
             }
             val inbox = node.diaryInboxItems().map { item -> item.copy(moment = item.moment?.let { reconcileMoment(it) },
-                road = encodeDiaryMoments(decodeDiaryMoments(item.road).map { reconcileMoment(it) })) }
+                road = encodeDiaryMoments(decodeDiaryMoments(item.road).map { reconcileMoment(it) }),
+                originalMoment = if (item.originalMoment.isBlank()) "" else jsonObject(reconcileMoment(decodeDiaryMoment(JSONObject(item.originalMoment)))).toString()) }
             if (blocks == node.blocks() && moments == node.diaryMoments() && inbox == node.diaryInboxItems()) node else
                 node.copy(document = encodeBlocks(blocks), text = blockPlainText(blocks), diaryRoad = encodeDiaryMoments(moments), diaryInbox = encodeDiaryInbox(inbox), updatedAt = System.currentTimeMillis())
         }

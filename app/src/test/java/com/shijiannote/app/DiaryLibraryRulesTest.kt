@@ -28,13 +28,28 @@ class DiaryLibraryRulesTest {
         assertEquals(entries, DiaryLibraryRules.list(entries, today, selecting = true, zone = zone))
     }
 
-    @Test fun emptyRecordsStayOutEvenWhenMetadataOrInboxRemain() {
+    @Test fun emptyRecordsStayOutEvenWhenDisplayMetadataRemains() {
         val empty = diary(today.minusDays(1), "")
         assertFalse(DiaryLibraryRules.isVisible(empty))
         assertFalse(DiaryLibraryRules.isVisible(empty.copy(mood = "平静", favorite = true, diaryRoadEnabled = true)))
         assertTrue(DiaryLibraryRules.isVisible(empty.copy(title = "旧日记")))
         assertFalse(DiaryLibraryRules.isVisible(empty.copy(text = "旧日记", deletedAt = 1)))
         assertFalse(DiaryLibraryRules.isVisible(empty.copy(text = "记忆", kind = "memory")))
+    }
+
+    @Test fun labelsDistinguishDraftOnlyFromOtherRetainedInboxStates() {
+        assertEquals("仅有草稿", DiaryLibraryRules.inboxOnlyLabel(false, listOf("draft", "draft")))
+        listOf("retracted", "deleted", "road").forEach {
+            assertEquals("仅有收纳", DiaryLibraryRules.inboxOnlyLabel(false, listOf("draft", it)))
+        }
+        assertNull(DiaryLibraryRules.inboxOnlyLabel(true, listOf("draft")))
+        assertNull(DiaryLibraryRules.inboxOnlyLabel(false, emptyList()))
+    }
+
+    @Test fun publishedTagsDeduplicateAcrossSummaryAndMomentsInFirstAppearanceOrder() {
+        assertEquals(listOf("旅行", "阅读", "晚霞", "工作"),
+            DiaryLibraryRules.publishedTags("旅行 #阅读", listOf("#旅行 晚霞", "晚霞 工作")))
+        assertEquals(emptyList<String>(), DiaryLibraryRules.publishedTags("", listOf("", " ")))
     }
 
     @Test fun undatedLegacyDiaryUsesCreatedLocalDay() {

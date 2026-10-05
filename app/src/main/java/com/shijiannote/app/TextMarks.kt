@@ -4,6 +4,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Color
 
 // A compact, JSON-safe range representation; unknown or out-of-bounds ranges are ignored.
 data class TextMark(val start: Int, val end: Int, val style: String)
@@ -12,11 +13,16 @@ fun NoteBlock.textMarks(): List<TextMark> = marks.split(';').mapNotNull { value 
     if (parts.size != 3) return@mapNotNull null
     val start = parts[0].toIntOrNull() ?: return@mapNotNull null
     val end = parts[1].toIntOrNull() ?: return@mapNotNull null
-    if (start < 0 || end > text.length || start >= end || parts[2] !in setOf("b", "i")) null else TextMark(start, end, parts[2])
+    if (start < 0 || end > text.length || start >= end || parts[2] !in setOf("b", "i", "h")) null else TextMark(start, end, parts[2])
 }
 private fun encodedMarks(marks: List<TextMark>) = marks.joinToString(";") { "${it.start}:${it.end}:${it.style}" }
 fun NoteBlock.toggleMark(start: Int, end: Int, style: String): NoteBlock {
-    if (start == end) return if (style == "b") copy(bold = !bold) else copy(italic = !italic)
+    require(style in setOf("b", "i", "h"))
+    if (start == end) return when (style) {
+        "b" -> copy(bold = !bold)
+        "i" -> copy(italic = !italic)
+        else -> copy(display = if (display == "highlight") "inherit" else "highlight")
+    }
     val rangeStart = minOf(start, end); val rangeEnd = maxOf(start, end)
     val old = textMarks()
     val removing = old.any { it.style == style && it.start <= rangeStart && it.end >= rangeEnd }
@@ -43,17 +49,40 @@ fun NoteBlock.editText(next: String): NoteBlock {
     return copy(text = next, marks = encodedMarks(adjusted))
 }
 fun NoteBlock.richText(query: String = ""): AnnotatedString = AnnotatedString.Builder(highlightText(text, query)).apply {
-    textMarks().forEach { mark -> addStyle(if (mark.style == "b") SpanStyle(fontWeight = FontWeight.SemiBold) else SpanStyle(fontStyle = FontStyle.Italic), mark.start, mark.end) }
+    if (display == "highlight" && text.isNotEmpty()) addStyle(SpanStyle(background = Color(0xFFFFE7A0)), 0, text.length)
+    textMarks().forEach { mark -> addStyle(when (mark.style) {
+        "b" -> SpanStyle(fontWeight = FontWeight.SemiBold)
+        "i" -> SpanStyle(fontStyle = FontStyle.Italic)
+        else -> SpanStyle(background = Color(0xFFFFE7A0))
+    }, mark.start, mark.end) }
 }.toAnnotatedString()
+
+/** Explicit typing styles affect newly inserted/replaced text, leaving surrounding ranges intact. */
+fun NoteBlock.editText(next: String, typingStyles: Set<String>): NoteBlock {
+    val edited = editText(next)
+    if (next == text) return edited
+    var prefix = 0
+    while (prefix < minOf(next.length, text.length) && next[prefix] == text[prefix]) prefix++
+    var suffix = 0
+    while (suffix < minOf(next.length, text.length) - prefix && next[next.lastIndex - suffix] == text[text.lastIndex - suffix]) suffix++
+    val end = next.length - suffix
+    if (prefix >= end) return edited
+    val marks = edited.textMarks().flatMap { mark ->
+        if (mark.end <= prefix || mark.start >= end) listOf(mark)
+        else listOfNotNull(mark.takeIf { it.start < prefix }?.copy(end = prefix), mark.takeIf { it.end > end }?.copy(start = end))
+    } + typingStyles.filter { it in setOf("b", "i", "h") }.map { TextMark(prefix, end, it) }
+    return edited.copy(marks = encodedMarks(marks))
+}
 
 fun NoteBlock.markdownText(escape: (String) -> String): String {
     val marks = textMarks()
-    if (marks.isEmpty()) return escape(text)
+    if (marks.isEmpty()) return if (display == "highlight") "<mark>${escape(text)}</mark>" else escape(text)
     val cuts = (listOf(0, text.length) + marks.flatMap { listOf(it.start, it.end) }).distinct().sorted()
     return cuts.zipWithNext().joinToString("") { (start, end) ->
         var part = escape(text.substring(start, end))
         if (marks.any { it.style == "b" && it.start <= start && it.end >= end }) part = "**$part**"
         if (marks.any { it.style == "i" && it.start <= start && it.end >= end }) part = "*$part*"
+        if (display == "highlight" || marks.any { it.style == "h" && it.start <= start && it.end >= end }) part = "<mark>$part</mark>"
         part
     }
 }

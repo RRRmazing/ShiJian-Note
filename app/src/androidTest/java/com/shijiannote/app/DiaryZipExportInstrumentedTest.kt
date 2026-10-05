@@ -30,12 +30,13 @@ class DiaryZipExportInstrumentedTest {
             val mixed = listOf(NoteBlock(text = "文字甲"), NoteBlock(type = "image", text = "../同名素材#100%", uri = Uri.fromFile(photo).toString()),
                 NoteBlock(text = "文字乙"), NoteBlock(type = "audio", text = "../同名素材#100%", uri = Uri.fromFile(audio).toString(), duration = 24000),
                 NoteBlock(type = "file", text = "../同名素材#100%", uri = Uri.fromFile(attachment).toString()), NoteBlock(text = "文字丙"),
-                NoteBlock(type = "link", target = "linked-private"), NoteBlock(text = "加粗斜体", marks = "0:2:b;2:4:i"))
+                NoteBlock(type = "link", target = "linked-private"), NoteBlock(text = "加粗斜体高亮", marks = "0:2:b;2:4:i;4:6:h"),
+                NoteBlock(text = "整块高亮", display = "highlight"))
             val first = DiaryMoment(id = "first", title = "早发生晚发送", occurredAt = 1000, sentAt = 9000)
-            val later = DiaryMoment(id = "later", title = "混合片段", occurredAt = 2000, sentAt = 3000, document = encodeBlocks(mixed), text = blockPlainText(mixed))
-            val note = entry().copy(text = "正文保留", diaryRoadTheme = "spring", diaryRoadLayout = "right",
+            val later = DiaryMoment(id = "later", title = "混合片段", occurredAt = 2000, sentAt = 3000, document = encodeBlocks(mixed), text = blockPlainText(mixed), tags = "重复 发布标签")
+            val note = entry().copy(text = "正文保留", tags = "重复 结语标签", diaryRoadTheme = "spring", diaryRoadLayout = "right",
                 diaryRoad = encodeDiaryMoments(listOf(later, first)), diaryInbox = encodeDiaryInbox(listOf(
-                    DiaryInboxItem(status = "draft", moment = DiaryMoment(text = "绝不能导出的草稿")),
+                    DiaryInboxItem(status = "draft", moment = DiaryMoment(text = "绝不能导出的草稿", tags = "绝不能导出的草稿标签")),
                     DiaryInboxItem(status = "deleted", moment = DiaryMoment(text = "绝不能导出的删除片段")))))
             val deleted = entry(LocalDate.of(2026, 10, 6)).copy(text = "整篇已删除不可导出", deletedAt = 123)
             val linked = NoteNode(id = "linked-private", title = "关联标题可见", text = "关联正文不可带出")
@@ -59,6 +60,9 @@ class DiaryZipExportInstrumentedTest {
                 assertTrue(html.indexOf(".pdf") < html.indexOf("文字丙"))
                 assertTrue(html.contains("关联标题可见"))
                 assertTrue(html.contains("<strong>加粗</strong><em>斜体</em>"))
+                assertTrue(html.contains("<mark>高亮</mark>"))
+                assertTrue(html.contains("<mark>整块高亮</mark>"))
+                assertTrue(html.contains("#重复 · #发布标签"))
                 val combined = paths.filter { it.endsWith(".html") || it.endsWith(".json") }.joinToString("\n", transform = ::text)
                 assertFalse(combined.contains("绝不能导出"))
                 assertFalse(combined.contains("关联正文不可带出"))
@@ -68,10 +72,12 @@ class DiaryZipExportInstrumentedTest {
                 val road = manifest.getJSONArray("dates").getJSONObject(0).getJSONObject("road")
                 assertEquals("right", road.getString("layout"))
                 val records = road.getJSONArray("moments")
+                assertEquals("重复 发布标签", records.getJSONObject(1).getString("tags"))
+                assertEquals("重复 结语标签", manifest.getJSONArray("dates").getJSONObject(0).getString("tags"))
                 assertEquals(1000L, records.getJSONObject(0).getLong("occurredAt"))
                 assertEquals(9000L, records.getJSONObject(0).getLong("sentAt"))
                 val blocks = records.getJSONObject(1).getJSONArray("blocks")
-                assertEquals(listOf("text", "image", "text", "audio", "file", "text", "link", "text"), (0 until blocks.length()).map { blocks.getJSONObject(it).getString("type") })
+                assertEquals(listOf("text", "image", "text", "audio", "file", "text", "link", "text", "text"), (0 until blocks.length()).map { blocks.getJSONObject(it).getString("type") })
                 for ((index, source) in listOf(1 to photo, 3 to audio, 4 to attachment)) {
                     val path = blocks.getJSONObject(index).getString("mediaPath")
                     assertArrayEquals(source.readBytes(), zip.getInputStream(zip.getEntry(path)).use { it.readBytes() })
@@ -86,8 +92,8 @@ class DiaryZipExportInstrumentedTest {
         val media = File(context.cacheDir, "zip-original-${UUID.randomUUID()}.bin").apply { writeText("original attachment") }
         val outputs = mutableListOf<File>()
         try {
-            val moment = DiaryMoment(id = "moment", text = "随记", occurredAt = 3000, sentAt = 1000,
-                document = encodeBlocks(listOf(NoteBlock(text = "随记"), NoteBlock(type = "file", text = "原附件", uri = Uri.fromFile(media).toString()))))
+            val moment = DiaryMoment(id = "moment", text = "随记", occurredAt = 3000, sentAt = 1000, tags = "格式标签",
+                document = encodeBlocks(listOf(NoteBlock(text = "随记高亮", marks = "2:4:h"), NoteBlock(type = "file", text = "原附件", uri = Uri.fromFile(media).toString()))))
             val roadOnly = entry().copy(diaryRoad = encodeDiaryMoments(listOf(moment)))
             val summaryOnly = entry(LocalDate.of(2026, 10, 6)).copy(text = "只有正文")
             val inboxOnly = entry(LocalDate.of(2026, 10, 7)).copy(diaryInbox = encodeDiaryInbox(listOf(DiaryInboxItem(moment = DiaryMoment(text = "箱中草稿")))))
@@ -101,6 +107,9 @@ class DiaryZipExportInstrumentedTest {
                     assertFalse(paths.any { it.startsWith("diary/") || it.contains("2026-10-06") || it.contains("2026-10-07") })
                     val content = zip.getInputStream(zip.getEntry("road/2026-10-05/index.$format")).bufferedReader().use { it.readText() }
                     assertTrue(content.contains("发生：")); assertTrue(content.contains("发送：")); assertTrue(content.contains("原附件"))
+                    assertTrue(content.contains("#格式标签"))
+                    if (format == "md") assertTrue(content.contains("<mark>高亮</mark>"))
+                    else { assertTrue(content.contains("随记高亮")); assertFalse(content.contains("<mark>")) }
                     assertTrue(content.contains("media/001-"))
                     val manifest = JSONObject(zip.getInputStream(zip.getEntry("manifest.json")).bufferedReader().use { it.readText() })
                     assertEquals("sent", manifest.getString("sort"))

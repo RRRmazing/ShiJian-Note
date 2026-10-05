@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import java.text.SimpleDateFormat
@@ -35,10 +36,13 @@ val ContentOutline = Color(0xFFB7C1CE)
         surfaceVariant = Color(0xFFF0F3F8), onSurface = NoteInk, onSurfaceVariant = Quiet, outline = Color(0xFFE0E5EC), error = Color(0xFFB66370)),
         shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(20.dp), large = RoundedCornerShape(28.dp)), content = content)
 }
-@Composable fun PageTitle(title: String, subtitle: String = "", back: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+@Composable fun PageTitle(title: String, subtitle: String = "", back: (() -> Unit)? = null, dense: Boolean = false, actions: @Composable RowScope.() -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(vertical = if (dense) 0.dp else 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-        Column(Modifier.weight(1f)) { Text(title, fontSize = 27.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis); if (subtitle.isNotBlank()) Text(subtitle, fontSize = 12.sp, color = Quiet) }
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = if (dense) 23.sp else 27.sp, lineHeight = if (dense) 27.sp else TextUnit.Unspecified, fontWeight = FontWeight.SemiBold, maxLines = if (dense) 1 else 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) Text(subtitle, fontSize = if (dense) 11.sp else 12.sp, lineHeight = if (dense) 15.sp else TextUnit.Unspecified, color = Quiet)
+        }
         actions()
     }
 }

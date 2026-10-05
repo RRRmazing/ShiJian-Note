@@ -48,6 +48,7 @@ import org.json.JSONObject
     var editorSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var roadSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var roadPreviewSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var roadResumeSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
     var diaryInboxOpen by rememberSaveable { mutableStateOf(false) }
     var diaryInboxDay by rememberSaveable { mutableStateOf<Long?>(null) }
     var editingNew by rememberSaveable { mutableStateOf(false) }
@@ -116,14 +117,20 @@ import org.json.JSONObject
     fun openRoad(note: NoteNode, query: String = "") {
         roadSnapshot = jsonObject(note).toString(); editorSnapshot = null; reveal = query; selecting = false
     }
+    fun openMoment(note: NoteNode) {
+        diaryInboxOpen = false
+        openRoad(model.currentDiary(note.day ?: dayMillis()))
+        roadResumeSnapshot = jsonObject(note).toString()
+    }
     fun open(note: NoteNode, new: Boolean = false, query: String = "") {
+        if (note.kind == "diary_moment") { openMoment(note); return }
         if (note.kind == "diary" && note.diaryInboxItems().isNotEmpty() &&
-            (!note.hasDiaryContent() || (query.isNotBlank() && !SearchRules.noteText(note.copy(diaryInbox = "")).contains(query, true)))) {
+            note.hasDiaryContent() && query.isNotBlank() && !SearchRules.noteText(note.copy(diaryInbox = "")).contains(query, true)) {
             diaryInboxDay = note.day; diaryInboxOpen = true
             editorSnapshot = null; roadSnapshot = null
             return
         }
-        if (note.kind == "diary" && (note.diaryRoadEnabled || note.diaryMoments().isNotEmpty())) openRoad(note, query)
+        if (note.kind == "diary" && (note.diaryRoadEnabled || note.diaryMoments().isNotEmpty() || !note.hasDiaryContent() && note.diaryInboxItems().isNotEmpty())) openRoad(note, query)
         else openSummary(note, new, query, fromRoad = roadSnapshot != null)
     }
     fun restorePreviousEditor() {
@@ -202,7 +209,7 @@ import org.json.JSONObject
         if (recallRequest != null && recallRequest != handledRecallRequest) {
             handledRecallRequest = recallRequest
             editorSnapshot = null; roadSnapshot = null; editorStack.clear(); reveal = ""
-            roadPreviewSnapshot = null; diaryInboxOpen = false
+            roadPreviewSnapshot = null; roadResumeSnapshot = null; diaryInboxOpen = false
             search = false; searchFolder = false; structure = false; structureFolder = false; structureSearchSnapshot = null
             general = false; trash = false; advanced = false; about = false; failurePage = false
             importDestination = null; selecting = false; addMemory = false
@@ -229,7 +236,9 @@ import org.json.JSONObject
         when { addMemory -> addMemory = false; importDestination != null -> importDestination = null; general -> general = false; trash -> trash = false; about -> about = false; else -> advanced = false }
     }
     YouthTheme {
-        Scaffold(containerColor = Mist, snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
+        val fullDiaryPage = road != null || roadPreview != null || diaryInboxOpen || editor?.kind in setOf("diary", "diary_moment")
+        Scaffold(containerColor = Mist, contentWindowInsets = if (fullDiaryPage) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
+            snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
             if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 val labels = listOf("时间表", "待办", "日记", "记忆", "设置")
                 val icons = listOf(Icons.Default.CalendarMonth, Icons.Default.CheckCircleOutline, Icons.Default.MenuBook, Icons.Default.FolderOpen, Icons.Default.Settings)
@@ -245,10 +254,10 @@ import org.json.JSONObject
                         onSummary = {}, onMoment = { _, _ -> },
                         previewMoment = DiaryMoment(id = roadPreview.id.removePrefix("moment-"), createdAt = roadPreview.createdAt,
                             title = roadPreview.title, text = roadPreview.text, document = roadPreview.document,
-                            occurredAt = roadPreview.diaryOccurredAt, sentAt = original?.sentAt),
+                            occurredAt = roadPreview.diaryOccurredAt, sentAt = original?.sentAt, tags = roadPreview.tags),
                         onPreviewBack = { roadPreviewSnapshot = null })
                 }
-                else if (editor != null) libraryState.SaveableStateProvider("editor-${editor.id}") { RichNoteEditor(editor, model, editingNew, reveal,
+                else if (editor != null && !diaryInboxOpen) libraryState.SaveableStateProvider("editor-${editor.id}") { RichNoteEditor(editor, model, editingNew, reveal,
                     onBack = {
                         if (road != null && (editor.id == road.id || (editor.kind == "diary_moment" && editor.parentId == road.id))) {
                             editorSnapshot = null; reveal = ""
@@ -271,16 +280,18 @@ import org.json.JSONObject
                     } }, onExport = ::export,
                     onDiaryRoad = { note -> openRoad(model.currentDiary(note.day ?: dayMillis())) },
                     onMomentPosition = { moment -> roadPreviewSnapshot = jsonObject(moment).toString() },
-                    onDiaryInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true; editorSnapshot = null }) }
+                    onDiaryInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true }) }
                 else if (diaryInboxOpen) DiaryInboxScreen(model, diaryInboxDay,
                     onBack = { diaryInboxOpen = false },
-                    onEdit = { draft -> editorStack.clear(); openSummary(draft, true, fromRoad = roadSnapshot != null) })
+                    onEdit = { draft -> editorStack.clear(); openMoment(draft) })
                 else if (road != null) libraryState.SaveableStateProvider("diary-road-${road.id}") {
                     DiaryRoadScreen(road, model,
                         onBack = { if (editorStack.isNotEmpty()) restorePreviousEditor() else { roadSnapshot = null; reveal = "" } },
                         onSummary = { note -> openSummary(note, !note.hasDiaryContent(), reveal, fromRoad = true) },
-                        onMoment = { moment, isNew -> openSummary(moment, isNew, reveal, fromRoad = true) },
-                        onExport = ::export, onInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true })
+                        onMoment = { moment, _ -> openMoment(moment) },
+                        onExport = ::export, onInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true },
+                        resumeMoment = roadResumeSnapshot?.let { decodeNode(JSONObject(it)) },
+                        onResumeConsumed = { roadResumeSnapshot = null })
                 }
                 else when {
                     failurePage -> ImageFailuresScreen(model, { failurePage = false }, { open(it, true) })
@@ -339,19 +350,21 @@ import org.json.JSONObject
                 }
                 if (editor == null && record.running) Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(16.dp), color = Peach) {
                     TextButton(onClick = { scope.launch {
-                        if (record.owner.startsWith("moment-")) {
+                        if (record.owner.startsWith("moment-") || record.owner.startsWith("edit-")) {
                             val parentNote = model.notes.nodes().firstOrNull { node -> node.deletedAt == null &&
-                                (node.diaryMoments().any { "moment-${it.id}" == record.owner } || node.diaryInboxItems().any { "moment-${it.moment?.id}" == record.owner }) }
+                                (node.diaryMoments().any { "moment-${it.id}" == record.owner } || node.diaryInboxItems().any { it.recordingOwner == record.owner || "moment-${it.moment?.id}" == record.owner }) }
                             parentNote?.let { parentNote ->
                                 val current = model.currentDiary(parentNote.day ?: dayMillis())
-                                model.getDiaryMomentNote(current.day ?: dayMillis(), record.owner.removePrefix("moment-"))?.let { moment ->
-                                    editorStack.clear(); openRoad(current); openSummary(moment, true, fromRoad = true)
+                                val momentId = current.diaryInboxItems().firstOrNull { it.recordingOwner == record.owner }?.moment?.id
+                                    ?: record.owner.removePrefix("moment-")
+                                model.getDiaryMomentNote(current.day ?: dayMillis(), momentId)?.let { moment ->
+                                    editorStack.clear(); openMoment(moment)
                                 }
                             }
                         } else model.notes.node(record.owner)?.let { open(it, true) }
                     } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
                 }
-                if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && tab < 4 && !(tab == 2 && diaryPast) && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
+                if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && tab < 4 && tab != 2 && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
                     if (addMemory && tab == 3) {
                         BackHandler { addMemory = false }
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable { addMemory = false })

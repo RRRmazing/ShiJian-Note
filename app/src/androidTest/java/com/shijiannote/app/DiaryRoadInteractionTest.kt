@@ -58,20 +58,21 @@ class DiaryRoadInteractionTest {
                 DiaryRoadScreen(note, model, onBack = {}, onSummary = { summary = it },
                     onMoment = { moment, _ -> openedMoment = moment })
             } }
+            rule.onNodeWithContentDescription("键盘").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("路上想到的一句话")
-            rule.onNodeWithContentDescription("保存片段").performClick()
+            rule.onNodeWithContentDescription("发送片段").performClick()
             rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryMoments().size == 1 }
             rule.onNodeWithText("路上想到的一句话").performScrollTo().assertExists()
-            rule.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(
-                androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
             rule.onNodeWithContentDescription("这一天的结语").performClick()
+            rule.waitUntil(5_000) { summary != null }
             assertEquals(note.id, summary?.id)
             assertEquals("完整结语保留", summary?.text)
             assertEquals(1, summary?.diaryMoments()?.size)
             rule.onNodeWithText("路上想到的一句话").performClick()
-            assertEquals("diary_moment", openedMoment?.kind)
-            assertEquals(note.id, openedMoment?.parentId)
-            assertEquals(note.day, openedMoment?.day)
+            rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryInboxItems().any { it.originalStatus == "editing" } }
+            assertNull(openedMoment)
+            rule.onNodeWithContentDescription("完成片段编辑").performClick()
             runBlocking { model.flush(note.id) }
             val saved = runBlocking { model.notes.node(note.id) }!!
             assertEquals("完整结语保留", saved.text)
@@ -115,7 +116,7 @@ class DiaryRoadInteractionTest {
             rule.onNodeWithText("已走过 1 / 2 处").assertExists()
             rule.onNodeWithText("退出回溯").performClick()
             rule.onNodeWithText("下一处").assertDoesNotExist()
-            rule.onNodeWithContentDescription("保存片段").assertExists()
+            rule.onNodeWithContentDescription("发送片段").assertExists()
             assertEquals(2, model.currentDiary(note.day!!).diaryMoments().size)
         } finally { cleanup(model, note) }
     }
@@ -130,14 +131,15 @@ class DiaryRoadInteractionTest {
         try {
             rule.activity.setContent { ModernShiJianApp() }
             rule.onNodeWithText("日记").performClick()
-            rule.onNodeWithText(note.title).performScrollTo().performClick()
+            rule.onNodeWithTag("diary-row-${note.id}").performScrollTo().performClick()
             rule.onNodeWithContentDescription("保存并返回").assertExists()
             rule.onNodeWithText("历史结语").assertExists()
-            rule.onNodeWithContentDescription("日记设置").performClick()
+            rule.onNodeWithContentDescription("更多").performClick()
+            rule.onNodeWithText("日记设置").performClick()
             rule.onNodeWithText("显示‘经历小路’").assertExists()
             rule.onNode(isToggleable()).performClick()
-            rule.waitUntil(5_000) { rule.onAllNodesWithText("这一天的小路").fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithText("这一天的小路").assertExists()
+            rule.waitUntil(5_000) { rule.onAllNodesWithText(dateText(note.day!!)).fetchSemanticsNodes().isNotEmpty() }
+            rule.onNodeWithText(dateText(note.day!!)).assertExists()
             rule.onNodeWithContentDescription("这一天的结语").assertExists()
             rule.onNodeWithContentDescription("这一天的结语").performClick()
             rule.onNodeWithText("历史结语").assertExists()
@@ -179,14 +181,14 @@ class DiaryRoadInteractionTest {
         try {
             rule.activity.setContent { ModernShiJianApp() }
             rule.onNodeWithText("日记").performClick()
-            rule.onNodeWithText(moment.text).performScrollTo().performClick()
+            rule.onNodeWithTag("diary-row-${note.id}").performScrollTo().performClick()
             rule.onNodeWithContentDescription("这一天的结语").performClick()
-            rule.onAllNodes(hasSetTextAction()).assertCountEquals(2)
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(1)
             rule.onNodeWithContentDescription("保存并返回").performClick()
-            rule.onNodeWithText("这一天的小路").assertExists()
+            rule.onNodeWithText(dateText(note.day!!)).assertExists()
             rule.onNodeWithText(moment.text).assertExists()
             runBlocking { model.flush(note.id) }
-            assertEquals(listOf(moment), runBlocking { model.notes.node(note.id) }!!.diaryMoments())
+            assertEquals(moment.id, runBlocking { model.notes.node(note.id) }!!.diaryMoments().single().id)
         } finally {
             cleanup(model, note)
             preferences.edit().putBoolean("diaryCalendar", wasCalendar).commit()
@@ -199,11 +201,14 @@ class DiaryRoadInteractionTest {
         seed(model, note)
         try {
             rule.activity.setContent { YouthTheme { DiaryRoadScreen(note, model, {}, {}, { _, _ -> }) } }
+            rule.onNodeWithContentDescription("键盘").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("第一段先暂存")
             rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryInboxItems().size == 1 }
             assertTrue(model.currentDiary(note.day!!).diaryMoments().isEmpty())
             assertNull(model.currentDiary(note.day!!).diaryInboxItems().single().moment!!.sentAt)
-            rule.onNodeWithText("暂存下一条").performClick()
+            rule.onNodeWithContentDescription("暂存").performClick()
+            rule.waitUntil(5_000) { rule.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isEmpty() }
+            rule.onNodeWithContentDescription("键盘").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("第二段继续写")
             rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryInboxItems().size == 2 }
             val captures = model.currentDiary(note.day!!).diaryInboxItems()
@@ -238,7 +243,7 @@ class DiaryRoadInteractionTest {
             rule.onNodeWithText("恢复小路").performClick()
             rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryRoadEnabled }
             val restored = model.currentDiary(note.day!!)
-            assertEquals(listOf(moment), restored.diaryMoments())
+            assertEquals(moment.id, restored.diaryMoments().single().id)
             assertEquals("right", restored.diaryRoadLayout)
             assertEquals("winter", restored.diaryRoadTheme)
             assertEquals("正文一直保留", restored.text)
@@ -271,8 +276,8 @@ class DiaryRoadInteractionTest {
         prefs.edit().putString(key, rich.id).commit()
         try {
             rule.activity.setContent { YouthTheme { DiaryRoadScreen(note, model, {}, {}, { _, _ -> }) } }
-            rule.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(
-                androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            rule.onNodeWithContentDescription("键盘").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("新的简单片段")
             rule.onNodeWithContentDescription("返回").performClick()
             val saved = model.currentDiary(note.day!!).diaryInboxItems()
@@ -295,6 +300,7 @@ class DiaryRoadInteractionTest {
                 val holder = rememberSaveableStateHolder()
                 if (shown.value) holder.SaveableStateProvider("test-road") { DiaryRoadScreen(note, model, {}, {}, { _, _ -> }) }
             } }
+            rule.onNodeWithContentDescription("键盘").performClick()
             rule.onNode(hasSetTextAction()).performTextInput("这段在收纳箱发送")
             rule.waitUntil(5_000) { model.currentDiary(note.day!!).diaryInboxItems().size == 1 }
             val staged = model.currentDiary(note.day!!).diaryInboxItems().single().moment!!
@@ -303,8 +309,7 @@ class DiaryRoadInteractionTest {
             runBlocking { model.publishDiaryMoment(note, staged) }
             rule.runOnUiThread { shown.value = true }
             rule.waitForIdle()
-            rule.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(
-                androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
             rule.onNodeWithContentDescription("返回").performClick()
             assertEquals(1, model.currentDiary(note.day!!).diaryMoments().size)
             assertTrue(model.currentDiary(note.day!!).diaryInboxItems().isEmpty())

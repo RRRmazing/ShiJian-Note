@@ -40,6 +40,34 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 @Composable
+fun DiaryMomentTimeDialog(parent: NoteNode, moment: DiaryMoment, model: WorkspaceModel, onDismiss: () -> Unit,
+    onOccurredAt: (Long?) -> Unit, onViewPosition: () -> Unit) {
+    val context = LocalContext.current
+    val order = appPreferences(context).getString("diary_time_sort", "occurred") ?: "occurred"
+    val revision by model.diaryRevision.collectAsState()
+    val current = remember(revision, parent.day) { model.currentDiary(parent.day ?: dayMillis()) }
+    var picker by rememberSaveable(moment.id) { mutableStateOf(false) }
+    val follows = moment.occurredAt == null || moment.sentAt != null && moment.occurredAt == moment.sentAt
+    SoftDialog("设置此片段的发生时间", onDismiss) {
+        Text("当前小路的片段按" + (if (order == "sent") "发送" else "发生") + "时间排序", fontSize = 12.sp, color = Quiet)
+        Row(Modifier.fillMaxWidth().clickable { onOccurredAt(null) }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(follows, { onOccurredAt(null) }); Text("跟随发送时间")
+        }
+        Row(Modifier.fillMaxWidth().clickable { picker = true }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(!follows, { picker = true }); Text("指定发生日期与时间")
+        }
+        if (!follows) Text(diaryTimestamp(moment.occurredAt!!), color = Quiet, fontSize = 12.sp)
+        HorizontalDivider()
+        DiaryNeighborOverview(diaryNeighbors(current.diaryMoments(), moment, order, System.currentTimeMillis()), parent.day, order)
+        TextButton(onClick = onViewPosition) { Text("在小路中查看") }
+        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
+    }
+    if (picker) DiaryDateTimePicker(moment.occurredAt ?: moment.sentAt ?: System.currentTimeMillis(), { picker = false }) {
+        onOccurredAt(it); picker = false
+    }
+}
+
+@Composable
 fun DiaryMomentTimePanel(parent: NoteNode, moment: DiaryMoment, model: WorkspaceModel,
     onOccurredAt: (Long?) -> Unit, onViewPosition: ((Long?, String) -> Unit)? = null, initiallyExpanded: Boolean = false) {
     val context = LocalContext.current
@@ -55,20 +83,21 @@ fun DiaryMomentTimePanel(parent: NoteNode, moment: DiaryMoment, model: Workspace
     SoftCard(color = Lavender) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(if (followsSend) "发生时间跟随发送" else "发生 ${diaryTimestamp(moment.occurredAt!!, parent.day)}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Text("当前按${if (order == "sent") "发送" else "发生"}时间排列", fontSize = 11.sp, color = Quiet)
+                Text("设置此片段的发生时间", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text("当前小路的片段按${if (order == "sent") "发送" else "发生"}时间排序", fontSize = 11.sp, color = Quiet)
             }
             TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "时间与位置") }
         }
         if (expanded) {
         Row(Modifier.fillMaxWidth().clickable { onOccurredAt(null) }, verticalAlignment = Alignment.CenterVertically) {
             RadioButton(followsSend, { onOccurredAt(null) })
-            Column { Text("跟随发送时间"); Text(if (moment.sentAt == null) "实际发送时确定日期和时分秒" else diaryTimestamp(moment.sentAt!!), fontSize = 12.sp, color = Quiet) }
+            Text("跟随发送时间")
         }
         Row(Modifier.fillMaxWidth().clickable { picker = true }, verticalAlignment = Alignment.CenterVertically) {
             RadioButton(!followsSend, { picker = true })
-            Column { Text("指定发生日期与时间"); Text(moment.occurredAt?.let { diaryTimestamp(it) } ?: "适合迟记或过去日期补记", fontSize = 12.sp, color = Quiet) }
+            Text("指定发生日期与时间")
         }
+        if (!followsSend) Text(diaryTimestamp(moment.occurredAt!!), fontSize = 12.sp, color = Quiet)
         if (moment.sentAt != null) Text("原发送：${diaryTimestamp(moment.sentAt!!)}", color = Quiet, fontSize = 12.sp)
         HorizontalDivider()
         Text("保存后的位置 · ${if (order == "sent") "按发送时间" else "按发生时间"}", fontSize = 13.sp, fontWeight = FontWeight.Medium)

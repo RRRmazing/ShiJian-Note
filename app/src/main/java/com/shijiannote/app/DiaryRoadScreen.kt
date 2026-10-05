@@ -1,6 +1,7 @@
 package com.shijiannote.app
 
 import android.graphics.Bitmap
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -10,7 +11,6 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,15 +20,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.shijiannote.app.data.NoteNode
 import kotlinx.coroutines.launch
-import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -36,11 +42,11 @@ import kotlin.math.roundToInt
 fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit,
     onSummary: (NoteNode) -> Unit, onMoment: (NoteNode, Boolean) -> Unit,
     onExport: (Set<String>) -> Unit = {}, onInbox: ((Long?) -> Unit)? = null,
-    previewMoment: DiaryMoment? = null, onPreviewBack: (() -> Unit)? = null) {
+    previewMoment: DiaryMoment? = null, onPreviewBack: (() -> Unit)? = null,
+    resumeMoment: NoteNode? = null, onResumeConsumed: () -> Unit = {}) {
     val context = LocalContext.current
     val prefs = appPreferences(context)
     val nodes by model.nodes.collectAsState()
-    val saveStates by model.saveStates.collectAsState()
     val revision by model.diaryRevision.collectAsState()
     val day = initial.day ?: dayMillis()
     val note = remember(nodes, revision, day) { model.currentDiary(day) }
@@ -49,7 +55,11 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
     val keyboard = LocalSoftwareKeyboardController.current
-    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val density = LocalDensity.current
+    val keyboardBottom = WindowInsets.ime.getBottom(density)
+    val keyboardVisible = keyboardBottom > 0
+    val initialHeaderHeight = 52.dp + with(density) { WindowInsets.statusBars.getTop(density).toDp() }
+    var headerHeight by remember { mutableStateOf(initialHeaderHeight) }
     val snackbar = remember { SnackbarHostState() }
     var settings by rememberSaveable(day) { mutableStateOf(false) }
     var localInbox by rememberSaveable(day) { mutableStateOf(false) }
@@ -58,39 +68,86 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
     var pendingScroll by rememberSaveable(day) { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var deletion by remember { mutableStateOf<DiaryMoment?>(null) }
-    var sending by remember { mutableStateOf(false) }
     var viewingPosition by rememberSaveable(day) { mutableStateOf(false) }
     var timeOpen by rememberSaveable(day) { mutableStateOf(false) }
-    val activeKey = "diary_quick_draft_" + day
-    var draftId by rememberSaveable(day) { mutableStateOf(run {
-        val previousId = prefs.getString(activeKey, null)
-        val previous = note.diaryInboxItems().firstOrNull { it.moment?.id == previousId && it.status == "draft" }?.moment
-        val id = previousId?.takeIf { previous != null && canResumeDiaryTextDraft(previous) } ?: UUID.randomUUID().toString()
-        if (previewMoment == null) prefs.edit().putString(activeKey, id).apply()
-        id
-    }) }
-    val resumed = remember(day, draftId) { note.diaryInboxItems().firstOrNull { it.moment?.id == draftId && it.status == "draft" }?.moment?.takeIf(::canResumeDiaryTextDraft) }
-    var startedAt by rememberSaveable(day, draftId) { mutableLongStateOf(resumed?.createdAt ?: System.currentTimeMillis()) }
-    var text by rememberSaveable(day, draftId) { mutableStateOf(resumed?.text ?: "") }
-    var wasStored by rememberSaveable(day, draftId) { mutableStateOf(resumed != null) }
-    var occurredAt by rememberSaveable(day, draftId) { mutableStateOf(resumed?.occurredAt) }
+    var departure by remember { mutableStateOf(false) }
     var background by remember(note.diaryRoadTheme, note.diaryRoadBackground) { mutableStateOf<Bitmap?>(null) }
+    val composer = rememberDiaryMomentComposer(model, day) { error = it }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, composer) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                if (!composer.busy && (composer.hasContent || composer.moment.occurredAt != null ||
+                        composer.editingPublished || composer.recordOwner != null)) {
+                    runCatching { composer.persist() }.onFailure { error = it.message ?: "草稿保存失败，请重试" }
+                }
+                scope.launch {
+                    runCatching { model.flush(model.currentDiary(day).id) }
+                        .onFailure { error = it.message ?: "草稿尚未保存，请重试" }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val isToday = day == dayMillis()
-    val preview = previewMoment ?: if (viewingPosition) DiaryMoment(draftId, startedAt, text = text, occurredAt = occurredAt, sentAt = null) else null
+    val preview = previewMoment ?: composer.moment.takeIf { viewingPosition }
     val neighbors = preview?.let { diaryNeighbors(moments, it, order, System.currentTimeMillis()) }
     val highlighted = if (preview != null) setOfNotNull(neighbors?.previous?.id, neighbors?.next?.id) else emptySet()
-    LaunchedEffect(note.diaryRoadTheme, note.diaryRoadBackground) { background = DiaryBackgroundLibrary.bitmap(context, note.diaryRoadTheme, note.diaryRoadBackground) }
-    LaunchedEffect(day) {
-        val current = model.currentDiary(day)
-        if (previewMoment == null && day == dayMillis() && !current.hasDiaryContent() && !current.diaryRoadEnabled && current.diaryRoadBackground.isBlank() && current.diaryRoadTheme == "forest") {
-            model.updateDiaryRoadAppearance(current, DiaryBackgroundLibrary.defaultTheme(context), DiaryBackgroundLibrary.defaultUri(context))
-            model.updateDiaryRoadLayout(model.currentDiary(day), DiaryBackgroundLibrary.defaultLayout(context))
+    fun latest() = model.currentDiary(day)
+    fun operation(action: suspend () -> Unit) {
+        if (composer.busy || composer.importing) return
+        keyboard?.hide()
+        composer.busy = true
+        scope.launch {
+            try { action() } catch (failure: Exception) { error = failure.message ?: "保存失败，片段仍在收纳箱" }
+            finally { composer.busy = false }
         }
     }
+    fun hasWorkingContent() = composer.editingPublished || composer.hasContent || composer.moment.occurredAt != null ||
+        RecordingService.state.value.let { it.running && it.owner == composer.recordOwner }
+    fun leave(action: () -> Unit) {
+        operation { composer.stage(context, clear = true); action() }
+    }
+    fun back() {
+        when {
+            composer.busy || composer.importing -> Unit
+            previewMoment != null -> onPreviewBack?.invoke()
+            viewingPosition -> viewingPosition = false
+            keyboardVisible -> keyboard?.hide()
+            recall -> recall = false
+            hasWorkingContent() -> departure = true
+            else -> { composer.reset(); onBack() }
+        }
+    }
+    LaunchedEffect(resumeMoment?.id) {
+        if (resumeMoment != null && previewMoment == null) {
+            runCatching {
+                if (hasWorkingContent()) composer.stage(context, clear = true)
+                composer.open(resumeMoment)
+                onResumeConsumed()
+            }.onFailure { error = it.message ?: "草稿暂时无法打开" }
+        }
+    }
+    LaunchedEffect(note.diaryRoadTheme, note.diaryRoadBackground) {
+        background = DiaryBackgroundLibrary.bitmap(context, note.diaryRoadTheme, note.diaryRoadBackground)
+    }
+    LaunchedEffect(day) {
+        val current = latest()
+        if (previewMoment == null && day == dayMillis() && !current.hasDiaryContent() && !current.diaryRoadEnabled &&
+            current.diaryRoadBackground.isBlank() && current.diaryRoadTheme == "forest") {
+            model.updateDiaryRoadAppearance(current, DiaryBackgroundLibrary.defaultTheme(context), DiaryBackgroundLibrary.defaultUri(context))
+            model.updateDiaryRoadLayout(latest(), DiaryBackgroundLibrary.defaultLayout(context))
+        }
+    }
+    LaunchedEffect(revision) { composer.reconcile() }
     LaunchedEffect(error) { error?.let { snackbar.showSnackbar(it); error = null } }
     LaunchedEffect(moments.size) { litCount = litCount.coerceAtMost(moments.size); if (moments.isEmpty()) recall = false }
     LaunchedEffect(moments.map { it.id }, pendingScroll) {
-        pendingScroll?.let { id -> val index = moments.indexOfFirst { it.id == id }; if (index >= 0) { list.animateScrollToItem(index + 1); pendingScroll = null } }
+        pendingScroll?.let { id ->
+            val index = moments.indexOfFirst { it.id == id }
+            if (index >= 0) { list.animateScrollToItem(index + 1); pendingScroll = null }
+        }
     }
     LaunchedEffect(preview?.id, preview?.occurredAt, preview?.sentAt, order) {
         if (preview != null) {
@@ -100,87 +157,47 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
             list.animateScrollToItem(if (index >= 0) index + 1 else 0)
         }
     }
-    fun latest() = model.currentDiary(day)
-    fun draft(content: String = text, at: Long? = occurredAt) = DiaryMoment(draftId, startedAt, text = content,
-        document = encodeBlocks(listOf(NoteBlock(text = content))), occurredAt = at, sentAt = null)
-    fun resetCapture() {
-        text = ""; occurredAt = null; viewingPosition = false; wasStored = false
-        draftId = UUID.randomUUID().toString()
-        prefs.edit().putString(activeKey, draftId).apply()
-    }
-    fun store(content: String = text, at: Long? = occurredAt): Boolean {
-        val current = latest()
-        val existing = current.diaryInboxItems().firstOrNull { it.moment?.id == draftId }
-        if (wasStored && existing == null && text.isNotBlank() || current.diaryMoments().any { it.id == draftId } || existing != null &&
-            (existing.status != "draft" || existing.moment?.let { !canResumeDiaryTextDraft(it) } == true)) {
-            resetCapture()
-            return true // Preserve the richer or explicitly moved item rather than overwriting it on departure.
-        }
-        return runCatching {
-            prefs.edit().putString(activeKey, draftId).apply()
-            model.saveDiaryDraft(current, draft(content, at))
-            wasStored = content.isNotBlank()
-        }.onFailure { error = it.message ?: "草稿暂存失败，请重试" }.isSuccess
-    }
-    fun leave(action: () -> Unit) {
-        if (!sending && store()) { keyboard?.hide(); action() }
-    }
-    fun openRich() {
-        if (sending || !store()) return
-        val virtual = draft().asNote(latest())
-        resetCapture()
-        onMoment(virtual, true)
-    }
-    fun publish() {
-        if (text.isBlank() || sending || !store() || text.isBlank()) return
-        val captured = draft()
-        sending = true
-        scope.launch {
-            runCatching { model.publishDiaryMoment(latest(), captured, captured.occurredAt) }
-                .onSuccess { pendingScroll = it.id; resetCapture() }
-                .onFailure { error = it.message ?: "发送失败，片段仍在收纳箱" }
-            sending = false
-        }
-    }
-    // The same draft may have been edited, sent or deleted from the global inbox while this page was away.
-    // Never revive a stale composer snapshot over that explicit action.
-    LaunchedEffect(revision, draftId, sending) {
-        if (previewMoment == null && !sending && text.isNotBlank()) {
-            val current = latest()
-            val active = current.diaryInboxItems().firstOrNull { it.moment?.id == draftId }
-            val changedElsewhere = active?.moment?.let { saved ->
-                saved.text != text || saved.occurredAt != occurredAt || !canResumeDiaryTextDraft(saved)
-            } ?: false
-            if (current.diaryMoments().any { it.id == draftId } || active == null || active.status != "draft" || changedElsewhere) resetCapture()
-        }
-    }
     if (localInbox && previewMoment == null) {
-        DiaryInboxScreen(model, day, { localInbox = false }, { virtual -> localInbox = false; onMoment(virtual, true) })
+        DiaryInboxScreen(model, day, { localInbox = false }, { virtual ->
+            localInbox = false
+            runCatching { composer.open(virtual) }.onFailure { error = it.message }
+        })
         return
     }
-    BackHandler(enabled = !settings && !timeOpen && deletion == null) {
-        when {
-            previewMoment != null -> onPreviewBack?.invoke()
-            viewingPosition -> viewingPosition = false
-            keyboardVisible -> keyboard?.hide()
-            recall -> recall = false
-            else -> leave(onBack)
-        }
-    }
+    BackHandler(enabled = !settings && !timeOpen && deletion == null && !departure) { back() }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Use the page's actual bounds, including when embedded below the app navigation.
+    val bottomInset = with(density) { maxOf(keyboardBottom, WindowInsets.navigationBars.getBottom(density)).toDp() }
+    val editorHeight = (maxHeight - headerHeight - bottomInset - 48.dp - 8.dp).coerceAtLeast(84.dp)
     Scaffold(containerColor = Color(0xFFF2F1E8), snackbarHost = { SnackbarHost(snackbar) }, topBar = {
-        Surface(color = Color(0xFFFCFCF8).copy(alpha = .96f)) {
+        Surface(color = Color(0xFFFCFCF8).copy(alpha = .96f), modifier = Modifier.onSizeChanged { headerHeight = with(density) { it.height.toDp() } }) {
             Column(Modifier.statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { when { previewMoment != null -> onPreviewBack?.invoke(); viewingPosition -> viewingPosition = false; else -> leave(onBack) } }, enabled = !sending) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                        Text(if (preview != null) "在小路中查看位置" else if (isToday) "今日小路" else "这一天的小路", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                        Text(dateText(day), fontSize = 12.sp, color = Quiet)
-                        if (preview == null) saveStates[note.id]?.let { state -> Text(state, fontSize = 11.sp, color = if (state.contains("失败")) MaterialTheme.colorScheme.error else Quiet,
-                            modifier = Modifier.clickable(enabled = state.contains("失败")) { model.retry() }) }
+                Row(Modifier.fillMaxWidth().height(52.dp).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = ::back, enabled = !composer.busy && !composer.importing, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                     }
+                    Text(if (preview != null) "在小路中查看位置" else if (isToday) "今日小路" else dateText(day),
+                        modifier = Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (preview == null) {
-                        IconButton(onClick = { leave { onSummary(latest()) } }, enabled = !sending) { Icon(Icons.Default.MenuBook, if (isToday) "今日结语" else "这一天的结语") }
-                        IconButton(onClick = { if (store()) settings = true }, enabled = !sending) { Icon(Icons.Default.Settings, "小路设置") }
+                        if (composer.expanded || composer.hasContent || composer.editingPublished) {
+                            IconButton(onClick = { composer.undo() }, enabled = composer.undo.isNotEmpty() && !composer.busy && !composer.importing, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Undo, "撤销片段修改", Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = { composer.redo() }, enabled = composer.redo.isNotEmpty() && !composer.busy && !composer.importing, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Redo, "重做片段修改", Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = { operation { composer.complete(context) } },
+                                enabled = !composer.busy && !composer.importing, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Check, "完成片段编辑", Modifier.size(21.dp))
+                            }
+                        }
+                        IconButton(onClick = { leave { onSummary(latest()) } }, enabled = !composer.busy && !composer.importing, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.MenuBook, if (isToday) "今日结语" else "这一天的结语", Modifier.size(21.dp))
+                        }
+                        IconButton(onClick = { keyboard?.hide(); settings = true }, enabled = !composer.busy && !composer.importing, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.Settings, "小路设置", Modifier.size(21.dp))
+                        }
                     }
                 }
                 if (preview != null && neighbors != null) Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -194,34 +211,30 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
             }
         }
     }, bottomBar = {
-        Surface(color = Color(0xFFFCFCF8), shadowElevation = 6.dp) {
-            Column(Modifier.navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Surface(color = Color.White, shadowElevation = 6.dp) {
+            Column(Modifier.navigationBarsPadding().imePadding()) {
                 when {
-                    preview != null -> Button(onClick = { if (previewMoment != null) onPreviewBack?.invoke() else viewingPosition = false }, modifier = Modifier.fillMaxWidth()) { Text("继续编辑") }
+                    preview != null -> Button(onClick = { if (previewMoment != null) onPreviewBack?.invoke() else viewingPosition = false },
+                        modifier = Modifier.fillMaxWidth().padding(8.dp)) { Text("继续编辑") }
                     recall -> Button(onClick = {
                         if (litCount < moments.size) { litCount++; scope.launch { list.animateScrollToItem(litCount) } } else recall = false
-                    }, modifier = Modifier.fillMaxWidth()) { Text(if (litCount < moments.size) "下一处" else "走完了 · 返回小路") }
-                    else -> {
-                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            IconButton(onClick = ::openRich, enabled = !sending) { Icon(Icons.Default.AddCircleOutline, "添加图片、语音、文件或丰富片段") }
-                            OutlinedTextField(text, { text = it; store(it) }, modifier = Modifier.weight(1f), enabled = !sending,
-                                placeholder = { Text(if (isToday) "留下这一刻…" else "补记这一天…") }, maxLines = 4, shape = RoundedCornerShape(18.dp))
-                            IconButton(onClick = ::publish, enabled = text.isNotBlank() && !sending) { if (sending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.AutoMirrored.Filled.Send, "保存片段") }
-                        }
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = { if (text.isNotBlank() && store()) resetCapture() }, enabled = text.isNotBlank() && !sending) { Text("暂存下一条") }
-                            Text("输入自动留在收纳箱，发送后出现在小路。", fontSize = 10.sp, color = Quiet, modifier = Modifier.weight(1f))
-                        }
-                        TextButton(onClick = { keyboard?.hide(); timeOpen = true }) { Text(occurredAt?.let { "发生 " + diaryTimestamp(it, day) } ?: "发生时间：跟随发送 · 设置") }
-                    }
+                    }, modifier = Modifier.fillMaxWidth().padding(8.dp)) { Text(if (litCount < moments.size) "下一处" else "走完了 · 返回小路") }
+                    else -> DiaryMomentComposer(composer, editorHeight, { timeOpen = true },
+                        onStage = { operation {
+                            composer.stage(context, clear = true)
+                            Toast.makeText(context, "当前片段已经存入收纳箱", Toast.LENGTH_SHORT).show()
+                        } },
+                        onPublish = { operation { pendingScroll = composer.publish(context).id } },
+                        onError = { error = it })
                 }
             }
         }
     }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).testTag("diary-road-background")) {
             val info = list.layoutInfo
             val first = info.visibleItemsInfo.firstOrNull()
-            val progress = if (first == null || info.totalItemsCount <= 1) 0f else ((first.index + (-first.offset).coerceAtLeast(0).toFloat() / first.size.coerceAtLeast(1)) / (info.totalItemsCount - 1)).coerceIn(0f, 1f)
+            val progress = if (first == null || info.totalItemsCount <= 1) 0f else
+                ((first.index + (-first.offset).coerceAtLeast(0).toFloat() / first.size.coerceAtLeast(1)) / (info.totalItemsCount - 1)).coerceIn(0f, 1f)
             DiaryPainting(background, progress, Modifier.fillMaxSize())
             if (recall) Box(Modifier.fillMaxSize().background(Color(0xFF142B34).copy(alpha = .72f)))
             LazyColumn(state = list, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 36.dp)) {
@@ -230,7 +243,8 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
                         Surface(shape = RoundedCornerShape(24.dp), color = Color.White.copy(alpha = .85f)) {
                             Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("从这里出发", fontWeight = FontWeight.Medium)
-                                Text(if (moments.isEmpty()) "一句话、一张照片，留住沿途的瞬间" else moments.size.toString() + " 个片段 · 按" + (if (order == "sent") "发送" else "发生") + "时间排列", fontSize = 11.sp, color = Quiet)
+                                Text(if (moments.isEmpty()) "一句话、一张照片，留住沿途的瞬间" else moments.size.toString() + " 个片段 · 按" +
+                                    (if (order == "sent") "发送" else "发生") + "时间排列", fontSize = 11.sp, color = Quiet)
                             }
                         }
                     }
@@ -239,31 +253,46 @@ fun DiaryRoadScreen(initial: NoteNode, model: WorkspaceModel, onBack: () -> Unit
                     val right = note.diaryRoadLayout == "right" || note.diaryRoadLayout == "alternate" && index % 2 == 1
                     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 20.dp), horizontalArrangement = if (right) Arrangement.End else Arrangement.Start) {
                         DiaryMomentCard(moment, note, nodes, order, !recall || index < litCount, recall, moment.id in highlighted,
-                            Modifier.fillMaxWidth(.65f), readOnly = preview != null,
-                            onEdit = { leave { onMoment(moment.asNote(latest()), false) } },
-                            onRetract = { if (store()) runCatching { model.retractDiaryMoment(latest(), moment.id) }.onFailure { error = it.message } },
+                            Modifier.fillMaxWidth(.65f), readOnly = preview != null || composer.busy || composer.importing,
+                            onEdit = { operation { if (hasWorkingContent()) composer.stage(context, clear = true); composer.open(moment.asNote(latest())) } },
+                            onRetract = { runCatching { model.retractDiaryMoment(latest(), moment.id) }.onFailure { error = it.message } },
                             onDelete = { deletion = moment }, onError = { error = it })
                     }
                 }
-                item(key = "end") { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(if (isToday) "小路还在继续" else "也可以在后来，补上这一天", fontSize = 12.sp, color = if (recall) Color.White else Color(0xFF536B53),
-                        modifier = Modifier.background(if (recall) Color(0xFF334743) else Color.White.copy(alpha = .8f), RoundedCornerShape(20.dp)).padding(12.dp))
-                } }
+                item(key = "end") {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text(if (isToday) "小路还在继续" else "也可以在后来，补上这一天", fontSize = 12.sp,
+                            color = if (recall) Color.White else Color(0xFF536B53),
+                            modifier = Modifier.background(if (recall) Color(0xFF334743) else Color.White.copy(alpha = .8f), RoundedCornerShape(20.dp)).padding(12.dp))
+                    }
+                }
             }
-            if (moments.isNotEmpty() && preview == null && !recall) FloatingActionButton(onClick = { recall = true; litCount = 0; scope.launch { list.animateScrollToItem(0) } },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).size(42.dp), containerColor = Color(0xFFFFFCED).copy(alpha = .9f)) { Icon(Icons.Default.AutoAwesome, "暗背景回溯", Modifier.size(18.dp)) }
+            if (moments.isNotEmpty() && preview == null && !recall && !composer.expanded) FloatingActionButton(
+                onClick = { recall = true; litCount = 0; scope.launch { list.animateScrollToItem(0) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).size(42.dp), containerColor = Color(0xFFFFFCED).copy(alpha = .9f)) {
+                Icon(Icons.Default.AutoAwesome, "暗背景回溯", Modifier.size(18.dp))
+            }
         }
     }
-    if (settings) DiaryDaySettings(note, model, { settings = false }, { enabled -> if (!enabled) onSummary(latest()) }, onExport,
-        onInbox = { date -> settings = false; resetCapture(); if (onInbox != null) onInbox(date) else localInbox = true })
-    if (timeOpen && previewMoment == null) SoftDialog("片段时间与位置", { timeOpen = false }) {
-        DiaryMomentTimePanel(latest(), draft(), model, { at -> occurredAt = at; store(at = at) },
-            { _, _ -> if (store()) { timeOpen = false; viewingPosition = true } }, initiallyExpanded = true)
-        TextButton(onClick = { timeOpen = false }, modifier = Modifier.align(Alignment.End)) { Text("完成") }
     }
-    deletion?.let { moment -> AlertDialog(onDismissRequest = { deletion = null }, title = { Text("将这个片段移入收纳箱？") }, text = { Text("删除后仍可恢复。结语与其他片段会保留。") },
-        confirmButton = { TextButton(onClick = { runCatching { model.deleteDiaryMoment(latest(), moment.id); deletion = null }.onFailure { error = it.message } }) { Text("移入收纳箱") } },
-        dismissButton = { TextButton(onClick = { deletion = null }) { Text("取消") } }) }
+    if (settings) DiaryDaySettings(note, model, { settings = false }, { enabled -> if (!enabled) leave { onSummary(latest()) } }, onExport,
+        onInbox = { date -> settings = false; leave { if (onInbox != null) onInbox(date) else localInbox = true } })
+    if (timeOpen && previewMoment == null) DiaryMomentTimeDialog(latest(), composer.moment, model,
+        onDismiss = { timeOpen = false }, onOccurredAt = { composer.change(composer.moment.copy(occurredAt = it)) },
+        onViewPosition = { timeOpen = false; viewingPosition = true })
+    if (departure) AlertDialog(onDismissRequest = { departure = false }, title = { Text(if (composer.editingPublished) "片段修改尚未完成" else "片段尚未发送") },
+        text = { Text("可以将当前内容留在收纳箱，之后再继续。") },
+        confirmButton = { TextButton(onClick = { departure = false; leave(onBack) }) { Text("存入收纳箱并离开") } },
+        dismissButton = { Row {
+            TextButton(onClick = { departure = false; composer.expanded = true; composer.keyboardRequest++ }) { Text("继续编辑") }
+            TextButton(onClick = { departure = false; operation { composer.discard(context); onBack() } }) { Text("丢弃") }
+        } })
+    deletion?.let { moment ->
+        AlertDialog(onDismissRequest = { deletion = null }, title = { Text("将这个片段移入收纳箱？") },
+            text = { Text("删除后仍可恢复。结语与其他片段会保留。") },
+            confirmButton = { TextButton(onClick = { runCatching { model.deleteDiaryMoment(latest(), moment.id); deletion = null }.onFailure { error = it.message } }) { Text("移入收纳箱") } },
+            dismissButton = { TextButton(onClick = { deletion = null }) { Text("取消") } })
+    }
 }
 
 /** Pan one painting calmly: no stretched pixels, repeated inverted scenery or tile seams. */
@@ -308,12 +337,25 @@ private fun DiaryMomentCard(moment: DiaryMoment, parent: NoteNode, nodes: List<N
 
 /** Keep mixed text/media blocks in their original order. */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
+fun DiaryMomentTagsPreview(tags: String) {
+    if (tags.isNotBlank()) FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        TagRules.names(tags).forEachIndexed { index, tag ->
+            Text("#" + tag, color = NoteInk, fontSize = 11.sp, modifier = Modifier.background(
+                listOf(Mint, Lavender, Peach, Color(0xFFFFF1CF))[index % 4], RoundedCornerShape(8.dp)).padding(horizontal = 6.dp, vertical = 3.dp))
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun DiaryMomentContentPreview(moment: DiaryMoment, parent: NoteNode, nodes: List<NoteNode>, onOpen: (NoteNode) -> Unit,
     onError: (String) -> Unit, maxBlocks: Int = 8) {
     val context = LocalContext.current
     val blocks = remember(moment.document, moment.text) { runCatching { decodeBlocks(moment.document, moment.text) }.getOrElse { listOf(NoteBlock(text = moment.text)) } }
     var imageId by remember { mutableStateOf<String?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        DiaryMomentTagsPreview(moment.tags)
         blocks.filter { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }.take(maxBlocks).forEach { block ->
             when (block.type) {
                 "image" -> {
@@ -332,9 +374,14 @@ fun DiaryMomentContentPreview(moment: DiaryMoment, parent: NoteNode, nodes: List
                         Icon(Icons.Default.Link, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text(target?.displayTitle() ?: block.text.ifBlank { "关联记录" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                else -> Text((if (block.type == "bullet") "• " else if (block.type == "check") if (block.checked) "☑ " else "☐ " else "") + block.text,
+                else -> Text(buildAnnotatedString {
+                    append(if (block.type == "bullet") "• " else if (block.type == "check") if (block.checked) "☑ " else "☐ " else if (block.type == "quote") "│ " else "")
+                    append(block.richText())
+                },
                     fontSize = if (block.type.startsWith("heading")) 17.sp else 15.sp, lineHeight = 23.sp, color = NoteInk,
                     fontWeight = if (block.bold || block.type.startsWith("heading")) FontWeight.SemiBold else FontWeight.Normal,
+                    fontStyle = if (block.italic) FontStyle.Italic else FontStyle.Normal,
+                    modifier = if (block.display == "highlight") Modifier.background(Color(0xFFFFF1A8)) else Modifier,
                     maxLines = if (blocks.size == 1) 6 else 3, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -342,4 +389,3 @@ fun DiaryMomentContentPreview(moment: DiaryMoment, parent: NoteNode, nodes: List
     }
     imageId?.let { id -> ImageViewer(blocks.filter { it.type == "image" }, id) { imageId = null } }
 }
-

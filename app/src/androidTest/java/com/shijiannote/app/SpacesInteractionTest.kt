@@ -28,16 +28,16 @@ class SpacesInteractionTest {
         }
     }
 
-    @Test fun diaryTagsAreLocalAndBlankTitleStaysUnnamed(): Unit = runBlocking {
+    @Test fun diaryTagsAreLocalAndNamingAreaIsHidden(): Unit = runBlocking {
         val model = model()
         val diary = NoteNode(id = "ui-tags-diary", kind = "diary", day = dayMillis(), text = "标签正文保持")
         val other = NoteNode(id = "ui-tags-other", parentId = MemorySpaces.WORK_ID, title = "已有标签记录", tags = "复用", text = "其他正文")
         model.notes.putAll(listOf(diary, other))
         try {
             rule.activity.setContent { YouthTheme { Box(Modifier.fillMaxSize().safeDrawingPadding()) { RichNoteEditor(diary, model, true, onBack = {}, onOpen = {}, onExport = {}) } } }
-            rule.onNodeWithText("未命名").assertExists()
-            rule.onAllNodes(hasSetTextAction())[0].performClick()
             rule.onNodeWithText("未命名").assertDoesNotExist()
+            rule.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+            rule.onNodeWithText("今天", substring = false).assertExists()
             rule.onNodeWithText("＋ 添加标签").performClick()
             rule.onNodeWithText("#复用").performClick()
             rule.onNodeWithText("#复用").assertExists()
