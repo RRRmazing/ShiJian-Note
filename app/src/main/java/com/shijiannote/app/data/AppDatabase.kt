@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ScheduleEvent::class, TodoBoard::class, TodoItem::class, DailyTodoPreferences::class, DiaryEntry::class, MemoryCategory::class, MemoryEntry::class, NoteNode::class, NoteVersion::class, LegacyTodoAlarm::class],
-    version = 12,
+    version = 14,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -134,10 +134,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val migration12To13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryRoad TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryRoadTheme TEXT NOT NULL DEFAULT 'forest'")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryRoadBackground TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        internal val migration13To14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryRoadEnabled INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryRoadLayout TEXT NOT NULL DEFAULT 'alternate'")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryInbox TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryOccurredAt INTEGER")
+                database.execSQL("ALTER TABLE note_nodes ADD COLUMN diaryTrashExpiresAt INTEGER")
+                database.query("SELECT id, diaryRoad FROM note_nodes WHERE kind = 'diary'").use { rows ->
+                    while (rows.moveToNext()) {
+                        val enabled = runCatching { org.json.JSONArray(rows.getString(1)).length() > 0 }.getOrDefault(false)
+                        if (enabled) database.execSQL("UPDATE note_nodes SET diaryRoadEnabled = 1 WHERE id = ?", arrayOf(rows.getString(0)))
+                    }
+                }
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             val app = context.applicationContext
             instance ?: Room.databaseBuilder(app, AppDatabase::class.java, "shijian_note.db")
-                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9, migration9To10, migration10To11, migration11To12)
+                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8, migration8To9, migration9To10, migration10To11, migration11To12, migration12To13, migration13To14)
                 .addCallback(object : Callback() {
                     override fun onOpen(db: SupportSQLiteDatabase) {
                         db.query("SELECT kind, legacyId FROM legacy_todo_alarms").use { rows ->

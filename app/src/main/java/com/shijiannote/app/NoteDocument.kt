@@ -42,12 +42,16 @@ fun decodeBlocks(document: String, fallback: String = ""): List<NoteBlock> {
 fun decodeNode(j: JSONObject): NoteNode = NoteNode(
     id = j.getString("id"), kind = j.getString("kind"), parentId = j.nullString("parentId"),
     title = j.optString("title"), text = j.optString("text"), document = j.optString("document"), day = j.nullLong("day"),
+    diaryRoad = j.optString("diaryRoad"), diaryRoadTheme = j.optString("diaryRoadTheme", "forest"), diaryRoadBackground = j.optString("diaryRoadBackground"),
+    diaryRoadEnabled = if (j.has("diaryRoadEnabled")) j.optBoolean("diaryRoadEnabled") else j.optString("diaryRoad").let { runCatching { JSONArray(it).length() > 0 }.getOrDefault(false) },
+    diaryRoadLayout = j.optString("diaryRoadLayout", "alternate"), diaryInbox = j.optString("diaryInbox"), diaryOccurredAt = j.nullLong("diaryOccurredAt"), diaryTrashExpiresAt = j.nullLong("diaryTrashExpiresAt"),
     position = j.optInt("position"), pinned = j.optBoolean("pinned"), favorite = j.optBoolean("favorite"), tags = j.optString("tags"), mood = j.optString("mood"),
     imageDisplay = j.optString("imageDisplay", "inherit"), imageStorage = j.optString("imageStorage", "inherit"),
     forceChildren = j.optBoolean("forceChildren"),
     deletedAt = j.nullLong("deletedAt"), deleteGroup = j.nullString("deleteGroup"), createdAt = j.getLong("createdAt"), updatedAt = j.getLong("updatedAt")
 )
 fun NoteNode.blocks(): List<NoteBlock> = decodeBlocks(document, text)
+
 fun NoteNode.displayTitle(): String = title.takeIf { it.isNotBlank() } ?: if (kind == "diary") "未命名" else
     text.lineSequence().firstOrNull { it.isNotBlank() }?.take(80) ?: if (kind == "folder") "未命名分类" else "未命名记忆"
 fun blockPlainText(blocks: List<NoteBlock>): String = blocks.joinToString("\n") { it.text }

@@ -126,7 +126,7 @@ class WorkspaceInstrumentedTest {
         sqlite.execSQL("ALTER TABLE schedule_events DROP COLUMN deletedAt")
         sqlite.execSQL("ALTER TABLE schedule_events DROP COLUMN important")
         sqlite.version = 9; sqlite.close()
-        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration9To10, AppDatabase.migration10To11, AppDatabase.migration11To12).build()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration9To10, AppDatabase.migration10To11, AppDatabase.migration11To12, AppDatabase.migration12To13, AppDatabase.migration13To14).build()
         try {
             val memory = migrated.noteDao().node("m$id")!!
             assertEquals("c$category", memory.parentId)
@@ -221,13 +221,14 @@ class WorkspaceInstrumentedTest {
         initial.close()
         val sqlite = SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE)
         sqlite.execSQL("ALTER TABLE note_nodes DROP COLUMN forceChildren")
+        listOf("diaryRoad", "diaryRoadTheme", "diaryRoadBackground", "diaryRoadEnabled", "diaryRoadLayout", "diaryInbox", "diaryOccurredAt", "diaryTrashExpiresAt").forEach { sqlite.execSQL("ALTER TABLE note_nodes DROP COLUMN $it") }
         sqlite.execSQL("ALTER TABLE schedule_events DROP COLUMN important")
         listOf("timeMode", "reminderSkipAt").forEach { sqlite.execSQL("ALTER TABLE todo_boards DROP COLUMN $it") }
         listOf("reminderRule", "reminderBaseAt", "reminderCustomDays", "reminderSkipAt").forEach { sqlite.execSQL("ALTER TABLE todo_items DROP COLUMN $it") }
         sqlite.execSQL("DROP TABLE legacy_todo_alarms")
         sqlite.execSQL("DROP TABLE room_master_table")
         sqlite.version = 10; sqlite.close()
-        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration10To11, AppDatabase.migration11To12).build()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration10To11, AppDatabase.migration11To12, AppDatabase.migration12To13, AppDatabase.migration13To14).build()
         try {
             assertFalse(migrated.noteDao().node("migration-note")!!.forceChildren)
             assertEquals("reference", migrated.noteDao().node("migration-note")!!.imageStorage)

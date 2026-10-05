@@ -44,7 +44,8 @@ import java.util.Locale
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boolean, reveal: String = "", onBack: () -> Unit, onOpen: (NoteNode) -> Unit, onExport: (Set<String>) -> Unit) {
+fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boolean, reveal: String = "", onBack: () -> Unit, onOpen: (NoteNode) -> Unit, onExport: (Set<String>) -> Unit, onDiaryRoad: ((NoteNode) -> Unit)? = null,
+    onMomentPosition: ((NoteNode) -> Unit)? = null, onDiaryInbox: ((Long?) -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val focus = LocalFocusManager.current
@@ -65,6 +66,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     var attachmentMenu by remember { mutableStateOf(false) }
     var picker by remember { mutableStateOf<String?>(null) }
     var settings by remember { mutableStateOf(false) }
+    var daySettings by remember { mutableStateOf(false) }
     var versions by remember { mutableStateOf(false) }
     var tableOfContents by remember { mutableStateOf(false) }
     var templates by remember { mutableStateOf(false) }
@@ -82,16 +84,30 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     var error by remember { mutableStateOf("") }
     var leaving by remember { mutableStateOf(false) }
     var stopBeforeLeaving by remember { mutableStateOf(false) }
+    var leaveToRoad by remember { mutableStateOf(false) }
+    var startingRecording by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val recording by RecordingService.state.collectAsState()
     val states by model.saveStates.collectAsState()
+    val diaryRevision by model.diaryRevision.collectAsState()
+    val parentDiary = if (note.kind in setOf("diary", "diary_moment")) {
+        remember(nodes, diaryRevision, note.day) { model.currentDiary(note.day ?: dayMillis()) }
+    } else null
+    val publishedMoment = parentDiary?.diaryMoments()?.find { "moment-${it.id}" == note.id }
+    val inboxMoment = parentDiary?.diaryInboxItems()?.firstOrNull { "moment-${it.moment?.id}" == note.id }
+    val isUnsentMoment = note.kind == "diary_moment" && publishedMoment == null
 
-    fun change(next: NoteNode, track: Boolean = true) {
+    fun editorMoment(): DiaryMoment = (publishedMoment ?: inboxMoment?.moment ?: DiaryMoment(
+        id = note.id.removePrefix("moment-"), createdAt = note.createdAt)).copy(
+        title = note.title, text = note.text, document = note.document, occurredAt = note.diaryOccurredAt,
+        sentAt = publishedMoment?.sentAt)
+
+    fun change(next: NoteNode, track: Boolean = true, restoreDiary: Boolean = false) {
         changed = true
         if (track && snapshot != jsonObject(next).toString()) { undo.add(snapshot); if (undo.size > 100) undo.removeAt(0); redo.clear() }
         val updated = next.copy(updatedAt = System.currentTimeMillis())
         snapshot = jsonObject(updated).toString()
-        model.save(updated)
+        if (restoreDiary && updated.kind == "diary") model.restoreDiarySnapshot(updated) else model.save(updated)
     }
     fun updateBlock(block: NoteBlock) = change(note.copy(document = encodeBlocks(blocks.map { if (it.id == block.id) block else it }), text = blockPlainText(blocks.map { if (it.id == block.id) block else it })))
     fun insert(block: NoteBlock) {
@@ -123,13 +139,17 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             runCatching {
                 collectRecordings()
                 val latest = decodeNode(org.json.JSONObject(snapshot))
-                val hasContent = latest.title.isNotBlank() || TagRules.names(latest.tags).isNotEmpty() || latest.blocks().any { it.text.isNotBlank() || it.uri.isNotBlank() || it.target.isNotBlank() }
-                if (hasContent || !initialEditing) { if (changed || initialEditing) model.save(decodeNode(org.json.JSONObject(snapshot))); model.flush(note.id) }
-                else if (nodes.any { it.id == note.id }) {
+                val hasContent = latest.hasDiaryContent()
+                if (latest.kind == "diary_moment") { model.save(latest); model.flush(latest.id) }
+                else if (hasContent || !initialEditing) { if (changed || initialEditing) model.save(decodeNode(org.json.JSONObject(snapshot))); model.flush(note.id) }
+                else if (note.kind != "diary" && nodes.any { it.id == note.id }) {
                     model.flush(note.id)
                     model.notes.remove(listOf(note.id))
                 }
-                withContext(Dispatchers.Main.immediate) { keyboard?.hide(); focus.clearFocus(); onBack() }
+                withContext(Dispatchers.Main.immediate) {
+                    keyboard?.hide(); focus.clearFocus()
+                    if (leaveToRoad && onDiaryRoad != null) onDiaryRoad(latest) else onBack()
+                }
             }.onFailure { error = it.message ?: "保存失败，请重试" }
             leaving = false
         }
@@ -182,12 +202,39 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         else error = "录音需要麦克风权限，可在系统应用设置中开启"
     }
     fun startRecording() {
-        if (recording.running) { error = "已有录音正在进行"; return }
-        model.save(note)
-        val permissions = listOf(Manifest.permission.RECORD_AUDIO) + if (android.os.Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
-        if (permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED })
-            runCatching { RecordingService.command(context, "start", note.id) }.onFailure { error = "无法开始录音，请重试" }
-        else microphone.launch(permissions.toTypedArray())
+        if (recording.running || startingRecording) { error = "已有录音正在进行"; return }
+        startingRecording = true
+        scope.launch {
+            runCatching {
+                // Persist the moment's identity before starting a background recording.
+                if (note.kind == "diary_moment") model.registerDiaryRecording(note) else model.save(note)
+                val permissions = listOf(Manifest.permission.RECORD_AUDIO) + if (android.os.Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
+                if (permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED })
+                    RecordingService.command(context, "start", note.id)
+                else microphone.launch(permissions.toTypedArray())
+            }.onFailure { error = it.message ?: "无法开始录音，请重试" }
+            startingRecording = false
+        }
+    }
+    fun publishMoment() {
+        if (leaving || !note.hasNoteContent()) return
+        if (recording.running && recording.owner == note.id) {
+            error = "请先结束录音，再发送片段"; return
+        }
+        scope.launch {
+            leaving = true
+            runCatching {
+                collectRecordings()
+                val latest = decodeNode(org.json.JSONObject(snapshot))
+                val parent = model.currentDiary(latest.day ?: error("片段缺少日期"))
+                val moment = editorMoment().copy(title = latest.title, text = latest.text, document = latest.document,
+                    occurredAt = latest.diaryOccurredAt)
+                model.publishDiaryMoment(parent, moment, latest.diaryOccurredAt)
+                model.flush("moment-${moment.id}")
+                keyboard?.hide(); focus.clearFocus(); onBack()
+            }.onFailure { error = it.message ?: "发送失败，内容仍保留在收纳箱" }
+            leaving = false
+        }
     }
     val latestCollect by rememberUpdatedState<suspend () -> Unit> { collectRecordings() }
     LaunchedEffect(note.id) {
@@ -199,33 +246,64 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
     LaunchedEffect(reveal) {
         if (reveal.isNotBlank()) {
             val index = shown.indexOfFirst { it.text.contains(reveal, ignoreCase = true) }
-            if (index >= 0) listState.scrollToItem(index + 2)
+            if (index >= 0) listState.scrollToItem(index + if (note.kind == "diary_moment") 3 else 2)
         }
     }
     Surface(Modifier.fillMaxSize(), color = Mist) {
         Column(Modifier.fillMaxSize().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = ::leave, enabled = !leaving) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "保存并返回") }
+                if (note.kind == "diary") IconButton(onClick = {
+                    scope.launch { runCatching {
+                        model.save(note); model.flush(note.id)
+                        if (note.day == dayMillis()) settings = true else daySettings = true
+                    }.onFailure { error = it.message ?: "保存失败，请重试" } }
+                }, enabled = !leaving) { Icon(Icons.Default.Settings, "日记设置") }
                 Column(Modifier.weight(1f)) {
-                    Text(if (note.kind == "diary") dateText(note.day ?: note.createdAt) else TreeRules.ancestors(note, nodes).lastOrNull()?.displayTitle() ?: "记忆", maxLines = 2, fontSize = 14.sp, color = Quiet)
-                    val saved = states[note.id].orEmpty()
+                    Text(when (note.kind) {
+                        "diary" -> "${dateText(note.day ?: note.createdAt)} · 结语"
+                        "diary_moment" -> "${dateText(note.day ?: note.createdAt)} · 随记片段"
+                        else -> TreeRules.ancestors(note, nodes).lastOrNull()?.displayTitle() ?: "记忆"
+                    }, maxLines = 2, fontSize = 14.sp, color = Quiet)
+                    val saved = states[if (note.kind == "diary_moment") note.parentId else note.id].orEmpty()
                     if (saved.isNotBlank()) Text(saved, fontSize = 11.sp, color = if (saved.contains("失败")) MaterialTheme.colorScheme.error else Quiet, modifier = Modifier.clickable { model.retry() })
                 }
                 IconButton(onClick = { editing = !editing; focus.clearFocus(); keyboard?.hide() }) { Icon(if (editing) Icons.Default.Done else Icons.Default.Edit, if (editing) "阅读" else "编辑") }
+                if (note.kind == "diary" && onDiaryRoad != null && (parentDiary?.diaryRoadEnabled == true || note.day == dayMillis())) IconButton(onClick = { leaveToRoad = true; leave() }, enabled = !leaving) {
+                    Icon(Icons.Default.Route, "查看小路")
+                }
+                if (isUnsentMoment) TextButton(onClick = ::publishMoment, enabled = !leaving && note.hasNoteContent()) { Text("发送") }
                 Box {
                     IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, "更多") }
                     DropdownMenu(more, { more = false }) {
-                        DropdownMenuItem(text = { Text("记录设置") }, onClick = { more = false; settings = true })
+                        if (note.kind != "diary_moment") DropdownMenuItem(text = { Text(if (note.kind == "diary") "日记设置" else "记录设置") }, onClick = {
+                            more = false
+                            if (note.kind == "diary" && note.day != dayMillis()) daySettings = true else settings = true
+                        })
+                        if (note.kind == "diary" && onDiaryRoad != null && parentDiary?.diaryRoadEnabled == true) DropdownMenuItem(text = { Text("查看小路") }, onClick = { more = false; leaveToRoad = true; leave() })
+                        if (isUnsentMoment) DropdownMenuItem(text = { Text("暂存到收纳箱") }, onClick = { more = false; leave() })
                         if (note.kind == "memory") DropdownMenuItem(text = { Text("移动到") }, enabled = !preparingMove, onClick = { more = false; openMovePicker() })
                         DropdownMenuItem(text = { Text("标题目录") }, onClick = { more = false; tableOfContents = true })
-                        DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
-                        DropdownMenuItem(text = { Text("导出这一篇") }, onClick = { more = false; scope.launch { model.save(note); model.flush(note.id); onExport(setOf(note.id)) } })
-                        DropdownMenuItem(text = { Text(if (note.favorite) "取消收藏" else "收藏") }, onClick = { more = false; change(note.copy(favorite = !note.favorite)) })
+                        if (note.kind != "diary_moment") {
+                            DropdownMenuItem(text = { Text("历史版本") }, onClick = { more = false; versions = true })
+                            if (note.kind != "diary" || note.day != dayMillis()) DropdownMenuItem(text = { Text("导出这一篇") }, onClick = { more = false; scope.launch { model.save(note); model.flush(note.id); onExport(setOf(note.id)) } })
+                            DropdownMenuItem(text = { Text(if (note.favorite) "取消收藏" else "收藏") }, onClick = { more = false; change(note.copy(favorite = !note.favorite)) })
+                        }
                         DropdownMenuItem(text = { Text("从模板追加") }, onClick = { more = false; templates = true })
                     }
                 }
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (note.kind == "diary_moment" && parentDiary != null) item("moment_time") {
+                DiaryMomentTimePanel(parentDiary, editorMoment(), model,
+                    onOccurredAt = { change(note.copy(diaryOccurredAt = it)) },
+                    onViewPosition = onMomentPosition?.let { view -> { _, _ ->
+                        model.save(note); keyboard?.hide(); focus.clearFocus(); view(note)
+                    } })
+                if (isUnsentMoment && inboxMoment != null && note.diaryOccurredAt == null) TextButton(onClick = {
+                    change(note.copy(diaryOccurredAt = inboxMoment.createdAt))
+                }) { Text("将暂存时间用作发生时间") }
+            }
                 item("title") {
                     if (editing) BasicTextField(note.title, { change(note.copy(title = it)) }, Modifier.fillMaxWidth().onFocusChanged { titleFocused = it.isFocused }, textStyle = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = NoteInk), decorationBox = { inner -> Box {
                         if (note.kind == "diary") {
@@ -235,7 +313,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                     } })
                     else if (note.title.isNotBlank() || note.kind == "diary") Text(note.title.ifBlank { "未命名" }, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = if (note.title.isBlank()) Quiet.copy(alpha = .55f) else NoteInk)
                 }
-                item("meta") {
+                item("meta") { if (note.kind != "diary_moment") {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             TagRules.names(note.tags).forEach { tag ->
@@ -248,6 +326,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                         }
                         if (note.mood.isNotBlank()) Text(note.mood, fontSize = 12.sp, color = Quiet)
                     }
+                }
                 }
                 items(shown, key = { it.id }) { block ->
                     if (block.type in setOf("image", "audio", "file", "link")) {
@@ -298,7 +377,7 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
                             listOf("text" to "正文", "heading1" to "大标题", "heading2" to "小标题", "bullet" to "列表", "check" to "勾选项", "quote" to "引用", "code" to "代码").forEach { (key, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { updateBlock(current.copy(type = key)); format = false }) }
                         } }
                     }
-                    TextButton(onClick = { insert(NoteBlock(text = SimpleDateFormat("HH:mm", Locale.CHINA).format(Date()))) }) { Text("时间") }
+                    TextButton(onClick = { insert(NoteBlock(text = SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(Date()))) }) { Text("时间") }
                 }
             }
         }
@@ -370,13 +449,22 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
             change(saved, false)
         }
     }
+    if (daySettings && parentDiary != null) DiaryDaySettings(parentDiary, model,
+        onDismiss = { daySettings = false },
+        onRoadChanged = { enabled ->
+            daySettings = false
+            if (enabled && onDiaryRoad != null) { leaveToRoad = true; leave() }
+        }, onExport = { ids -> scope.launch {
+            runCatching { model.save(note); model.flush(note.id); onExport(ids) }
+                .onFailure { error = it.message ?: "保存失败，请重试" }
+        } }, onInbox = onDiaryInbox)
     if (versions) VersionsDialog(note, model, { versions = false }) { restored ->
-        change(restored.copy(id = note.id, kind = note.kind, parentId = note.parentId, day = note.day, deletedAt = null, deleteGroup = null)); versions = false
+        change(restored.copy(id = note.id, kind = note.kind, parentId = note.parentId, day = note.day, deletedAt = null, deleteGroup = null), restoreDiary = true); versions = false
     }
     if (tableOfContents) SoftDialog("标题目录", { tableOfContents = false }) {
         val headings = shown.filter { it.type.startsWith("heading") }
         if (headings.isEmpty()) Text("将段落设为标题后，会在这里出现。", color = Quiet)
-        headings.forEach { block -> TextButton(onClick = { tableOfContents = false; scope.launch { listState.animateScrollToItem(shown.indexOf(block) + 2) } }) { Text(block.text.ifBlank { "未命名标题" }) } }
+        headings.forEach { block -> TextButton(onClick = { tableOfContents = false; scope.launch { listState.animateScrollToItem(shown.indexOf(block) + if (note.kind == "diary_moment") 3 else 2) } }) { Text(block.text.ifBlank { "未命名标题" }) } }
     }
     if (templates) SoftDialog("追加模板", { templates = false }) {
         listOf("每日复盘" to listOf("今天发生了什么", "值得记住的事", "明天的小目标"), "读书摘录" to listOf("书名与出处", "摘录", "我的想法"), "旅行记录" to listOf("时间与地点", "旅途片段", "下次想做的事")).forEach { (title, headings) ->
@@ -404,10 +492,10 @@ fun RichNoteEditor(initial: NoteNode, model: WorkspaceModel, initialEditing: Boo
         }
     }
     viewing?.let { id -> ImageViewer(blocks.filter { it.type == "image" }, id, { viewing = null }) }
-    if (stopBeforeLeaving) SoftDialog("录音尚未结束", { stopBeforeLeaving = false }) {
+    if (stopBeforeLeaving) SoftDialog("录音尚未结束", { stopBeforeLeaving = false; leaveToRoad = false }) {
         Text("结束录音并保存后返回？")
         Button(onClick = { stopBeforeLeaving = false; scope.launch { RecordingService.command(context, "stop"); while (RecordingService.state.value.running) delay(100); latestCollect(); leave() } }) { Text("结束并保存") }
-        TextButton(onClick = { stopBeforeLeaving = false }) { Text("继续录制") }
+        TextButton(onClick = { stopBeforeLeaving = false; leaveToRoad = false }) { Text("继续录制") }
     }
     if (error.isNotBlank()) SoftDialog("提示", { error = "" }) { Text(error); TextButton(onClick = { error = "" }) { Text("知道了") } }
 }

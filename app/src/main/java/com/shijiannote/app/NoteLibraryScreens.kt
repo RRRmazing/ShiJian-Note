@@ -293,10 +293,13 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     onTrash: (Set<String>) -> Unit,
     onSelection: (Boolean) -> Unit,
     pastPage: Boolean = false,
-    onPastChange: (Boolean) -> Unit = {}
+    onPastChange: (Boolean) -> Unit = {},
+    onRoad: (NoteNode) -> Unit = {},
+    onSummary: (NoteNode, Boolean) -> Unit = onOpen,
+    onInbox: (Long?) -> Unit = {}
 ) {
     val all by model.nodes.collectAsState()
-    val diaries = all.filter { it.kind == "diary" && it.deletedAt == null }
+    val diaries = all.filter { DiaryLibraryRules.isVisible(it) }
         .sortedWith(compareByDescending<NoteNode> { it.day ?: it.createdAt }.thenByDescending { it.createdAt })
     val context = LocalContext.current
     val prefs = appPreferences(context)
@@ -310,7 +313,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     var today by remember { mutableStateOf(LocalDate.now()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) today = LocalDate.now() }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) { today = LocalDate.now(); model.cleanupDiaryRetention() } }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
@@ -318,6 +321,7 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     LaunchedEffect(Unit) {
         while (true) {
             today = LocalDate.now()
+            model.cleanupDiaryRetention().join()
             val nextDay = today.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant()
             delay((nextDay.toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(1_000L))
         }
@@ -339,14 +343,18 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     val recallListState = rememberLazyListState()
     val listState = if (pastPage) recallListState else mainListState
     val scope = rememberCoroutineScope()
+    val todayDay = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val showTodayEntrances = !favorites && !selecting && !pastPage
+    // These are views of the same dated record, never two automatically saved empty notes.
+    val todayNote = all.find { it.kind == "diary" && it.deletedAt == null && DiaryLibraryRules.isOnDate(it, today) }
     val shown = when {
         selectionMode == "export" -> diaries
         pastPage -> DiaryRecallRules.recalled(diaries, today)
-        else -> diaries.filter { !favorites || it.favorite }
+        else -> DiaryLibraryRules.list(diaries, today, favorites, selecting)
     }
     val selectableIds = shown.map { it.id }.toSet()
-    LaunchedEffect(diaries.map { it.id }) {
-        val remaining = selected.intersect(diaries.map { it.id }.toSet())
+    LaunchedEffect(selectableIds) {
+        val remaining = selected.intersect(selectableIds)
         if (selected.isNotEmpty() && remaining.isEmpty()) selectionMode = ""
         selected = remaining
     }
@@ -391,16 +399,48 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "更多") }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem(text = { Text("日记设置") }, onClick = { settings = true; menu = false })
-                            DropdownMenuItem(text = { Text("导出日记") }, onClick = { selected = emptySet(); selectionMode = "export"; menu = false })
+                            DropdownMenuItem(text = { Text("总收纳箱") }, onClick = { menu = false; onInbox(null) })
                         }
                     }
                 }
             }
-            if (selecting) NoteSelectionActions(selected.size, selectableIds.isNotEmpty() && selected.containsAll(selectableIds), selectableIds.isNotEmpty(),
+            if (selectionMode == "export") {
+                Text("已选择 ${selected.size} 天", color = Sky, modifier = Modifier.padding(top = 10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { selected = if (selected.containsAll(selectableIds)) emptySet() else selectableIds }, enabled = selectableIds.isNotEmpty()) { Text(if (selected.containsAll(selectableIds) && selectableIds.isNotEmpty()) "取消全选" else "全选") }
+                    TextButton(onClick = { selected = emptySet(); selectionMode = "" }) { Text("取消") }
+                    Spacer(Modifier.weight(1f))
+                    Button(onClick = { onExport(selected) }, enabled = selected.isNotEmpty()) { Text("下一步") }
+                }
+            } else if (selecting) NoteSelectionActions(selected.size, selectableIds.isNotEmpty() && selected.containsAll(selectableIds), selectableIds.isNotEmpty(),
                 onAll = { selected = if (selected.containsAll(selectableIds)) emptySet() else selectableIds },
                 onCancel = { selected = emptySet(); selectionMode = "" },
-                onExport = if (selectionMode == "export") ({ onExport(selected); selected = emptySet(); selectionMode = "" }) else null,
+                onExport = null,
                 onDelete = if (selectionMode == "manage") ({ onTrash(selected) }) else null)
+        }
+        if (showTodayEntrances) {
+            item(key = "today-road") {
+                val moments = todayNote?.diaryMoments().orEmpty()
+                DiaryTodayEntrance("今日小路", dateText(todayDay),
+                    if (moments.isEmpty()) "留下今天的第一个瞬间" else "${moments.size} 个片段 · ${DiaryLibraryRules.momentPreview(moments.last())}",
+                    Icons.Default.Route, Mint) { onRoad(model.currentDiary(todayDay)) }
+            }
+            item(key = "today-summary") {
+                DiaryTodayEntrance("今日结语", "随时写下，也可以睡前回顾",
+                    todayNote?.let { DiaryLibraryRules.summaryPreview(it) }.orEmpty().ifBlank { "写写今天" },
+                    Icons.Default.EditNote, Lavender) {
+                    val note = model.currentDiary(todayDay)
+                    onSummary(note, all.none { it.id == note.id && it.deletedAt == null })
+                }
+            }
+        }
+        if (!selecting && !pastPage) item(key = "diary-inbox") {
+            val count = all.filter { it.kind == "diary" }.sumOf { it.diaryInboxItems().size }
+            TextButton(onClick = { onInbox(null) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Inventory2, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (count == 0) "收纳箱 · 暂存随记与小路" else "收纳箱 · $count 项")
+            }
         }
         if (calendar && !selecting && !pastPage) item {
             DiaryCalendar(month, diaries.mapNotNull { it.day }.toSet(),
@@ -415,18 +455,18 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                         }
                     }
                 }) { day ->
-                val existing = diaries.find { it.day == day }
-                onOpen(existing ?: model.newNote("diary", day = day), existing == null)
+                val record = model.currentDiary(day)
+                if (record.hasDiaryContent()) onOpen(record, all.none { it.id == record.id && it.deletedAt == null })
+                else onRoad(record)
             }
         }
         if (shown.isEmpty()) item {
             SoftCard {
-                Text(when { pastPage -> "往年的今天都没有日记，快去创建今日日记吧。"; favorites -> "还没有收藏的日记"; else -> "从今天的一件小事开始" })
-                if (pastPage) TextButton(onClick = {
-                    val day = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                    onOpen(model.newNote("diary", day = day), true)
-                }) { Text("写今日日记") }
-                else if (!favorites) Text("点击＋写今天的日记，也可以从日历选择日期。", color = Quiet)
+                Text(when { selecting -> "没有可选择的日记"; pastPage -> "往年的今天都没有日记，快去创建今日日记吧。"; favorites -> "还没有收藏的日记"; else -> "历史日记会收在这里" })
+                if (pastPage && !selecting) TextButton(onClick = {
+                    onRoad(model.currentDiary(todayDay))
+                }) { Text("记录今日小路") }
+                else if (!favorites && !selecting) Text("从上方进入今日小路或今日结语，也可以从日历补记过去。", color = Quiet)
             }
         }
         items(shown, key = { it.id }) { n ->
@@ -437,6 +477,8 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
         }
     }
     if (settings) SoftDialog("日记设置", { settings = false }) {
+        OutlinedButton(onClick = { settings = false; selected = emptySet(); selectionMode = "export" }, modifier = Modifier.fillMaxWidth()) { Text("导出日记") }
+        Text("先选择日期，再统一选择小路、日记与阅读格式。", color = Quiet, fontSize = 12.sp)
         Row(Modifier.fillMaxWidth().toggleable(value = reminderEnabled, role = androidx.compose.ui.semantics.Role.Checkbox,
             onValueChange = { DiaryRecallReminder.setEnabled(context, it) }), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(reminderEnabled, null)
@@ -454,6 +496,23 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
     }
 }
 
+@Composable private fun DiaryTodayEntrance(title: String, subtitle: String, preview: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, onClick: () -> Unit) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp),
+        color = color, border = BorderStroke(1.dp, ContentOutline)) {
+        Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(16.dp), color = Color.White.copy(alpha = .72f)) {
+                Icon(icon, null, tint = Sky, modifier = Modifier.padding(12.dp).size(26.dp))
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                Text(title, fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                Text(subtitle, fontSize = 12.sp, color = Quiet, modifier = Modifier.padding(top = 3.dp))
+                Text(preview, fontSize = 14.sp, color = Quiet, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = Sky)
+        }
+    }
+}
+
 @Composable private fun DiaryEntryCard(note: NoteNode, selected: Boolean, selecting: Boolean, onClick: () -> Unit, onLongClick: () -> Unit, onToggle: () -> Unit) {
     Surface(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(20.dp), color = if (selected) Lavender else Color.White,
@@ -464,8 +523,14 @@ fun treeRows(nodes: List<NoteNode>, root: String?, expanded: Set<String>, tree: 
                 if (note.favorite) Icon(Icons.Default.Favorite, "已收藏", tint = Color(0xFFE04B5A), modifier = Modifier.size(16.dp))
                 if (selecting) Checkbox(selected, { onToggle() }, modifier = Modifier.size(28.dp))
             }
-            Text(note.displayTitle(), fontSize = 19.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp))
-            if (note.text.isNotBlank()) Text(note.text, color = Quiet, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            val moments = note.diaryMoments()
+            val summary = DiaryLibraryRules.summaryPreview(note)
+            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(note.title.ifBlank { "日记" }, fontSize = 19.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                if (moments.isNotEmpty()) Text("${moments.size} 个片段", fontSize = 12.sp, color = Sky)
+            }
+            if (moments.isNotEmpty()) Text(DiaryLibraryRules.momentPreview(moments.last()), color = Quiet, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            if (summary.isNotBlank()) Text((if (moments.isNotEmpty()) "结语 · " else "") + summary, color = Quiet, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
             val tags = TagRules.names(note.tags).map { "#$it" }
             val details = (listOf(note.mood).filter { it.isNotBlank() } + tags).joinToString(" · ")
             if (details.isNotBlank()) Text(details, fontSize = 12.sp, color = Quiet, modifier = Modifier.padding(top = 6.dp))

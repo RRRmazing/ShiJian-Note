@@ -28,10 +28,28 @@ object ExportEngine {
     private fun output(context: Context, title: String, extension: String): File = File(File(context.cacheDir, "exports").apply { mkdirs() }, "${clean(title)}-${UUID.randomUUID().toString().take(8)}.$extension")
     private fun readable(context: Context, block: NoteBlock): Boolean = runCatching { context.contentResolver.openInputStream(Uri.parse(block.uri))?.use { true } ?: false }.getOrDefault(false)
     suspend fun inspect(context: Context, selected: List<NoteNode>): ExportInspection = withContext(Dispatchers.IO) {
-        val blocks = selected.flatMap { it.blocks() }.filter { it.uri.isNotBlank() }.distinctBy { it.uri }
+        val blocks = selected.flatMap { it.materialBlocks() }.filter { it.uri.isNotBlank() }.distinctBy { it.uri }
         ExportInspection(selected.count { it.kind == "folder" }, selected.count { it.kind != "folder" }, blocks.count { it.owned }, blocks.count { !it.owned && it.type == "image" }, blocks.count { !it.owned && it.type != "image" }, blocks.filterNot { readable(context, it) }.map { it.text })
     }
     private fun selectedMaterial(b: NoteBlock, options: ExportOptions): Boolean = b.owned || if (b.type == "image") options.referenceImages else options.referenceFiles
+    private fun backgroundLibraryMaterials(context: Context): List<NoteBlock> {
+        val preferences = appPreferences(context)
+        val library = JSONArray(preferences.getString("diary_background_library", "[]") ?: "[]")
+        val imported = (0 until library.length()).map { library.getJSONObject(it) }.map {
+            NoteBlock(type = "image", text = it.optString("name", "导入背景"), uri = it.optString("uri"), owned = true)
+        }
+        val default = preferences.getString("diary_default_background_uri", "").orEmpty()
+        return imported + if (default.isBlank()) emptyList() else listOf(NoteBlock(type = "image", text = "默认小路背景", uri = default, owned = true))
+    }
+    internal fun remapBackgroundPreferences(saved: JSONObject, restored: Map<String, String>) {
+        val library = JSONArray(saved.optString("diary_background_library", "[]"))
+        for (index in 0 until library.length()) {
+            val item = library.getJSONObject(index)
+            restored[item.optString("uri")]?.let { item.put("uri", it) }
+        }
+        if (saved.has("diary_background_library")) saved.put("diary_background_library", library.toString())
+        restored[saved.optString("diary_default_background_uri")]?.let { saved.put("diary_default_background_uri", it) }
+    }
     private fun escape(text: String) = text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("*", "\\*").replace("_", "\\_")
     fun paths(selected: List<NoteNode>): Map<String, String> {
         val ids = selected.map { it.id }.toSet()
@@ -54,7 +72,11 @@ object ExportEngine {
         append("路径：${TreeRules.path(node, all)}\n\n")
         if (node.kind == "diary") append("日期：${dateText(node.day ?: node.createdAt)}\n\n")
         if (node.tags.isNotBlank()) append("标签：${node.tags}\n\n")
-        node.blocks().forEach { b ->
+        if (node.diaryRoadBackground.isNotBlank()) {
+            val path = assets[node.diaryRoadBackground]
+            if (path != null) append("小路背景：[查看背景](<${relative(documentPath, path)}>)\n\n")
+        }
+        node.exportBlocks().forEach { b ->
             var text = if (b.type == "code") b.text else b.markdownText(::escape)
             if (b.bold) text = "**$text**"
             if (b.italic) text = "*$text*"
@@ -83,7 +105,7 @@ object ExportEngine {
     }
     suspend fun notes(context: Context, selected: List<NoteNode>, all: List<NoteNode>, options: ExportOptions): ExportResult = withContext(Dispatchers.IO) {
         require(selected.isNotEmpty()) { "没有可导出的内容" }
-        val materials = selected.flatMap { it.blocks() }.filter { it.uri.isNotBlank() }.distinctBy { it.uri }
+        val materials = selected.flatMap { it.materialBlocks() }.filter { it.uri.isNotBlank() }.distinctBy { it.uri }
         val included = materials.filter { selectedMaterial(it, options) }
         val missing = materials.filterNot { readable(context, it) }.map { it.text }.toMutableList()
         if (selected.size == 1 && selected.single().kind != "folder" && included.isEmpty()) {
@@ -149,7 +171,7 @@ object ExportEngine {
         for (node in selected) {
             if (node.kind == "folder") { line(TreeRules.path(node, all), 20f, true); continue }
             line(node.displayTitle(), 23f, true); line(TreeRules.path(node, all), 10f); if (node.kind == "diary") line(dateText(node.day ?: node.createdAt), 10f)
-            for (b in node.blocks()) {
+            for (b in node.exportBlocks()) {
                 if (b.type == "image" && images) {
                     val bitmap = loadImage(context, b.uri)
                     if (bitmap == null) { missing += b.text; line("图片不可访问：${b.text}"); continue }
@@ -174,8 +196,11 @@ object ExportEngine {
     }
     suspend fun backup(context: Context, model: WorkspaceModel, options: ExportOptions): ExportResult = withContext(Dispatchers.IO) {
         model.flushAll()
+        model.recoverDiaryRecordings()
+        model.flushAll()
         // Collect completed recording inboxes even when their editor has not reopened yet.
-        for (node in model.notes.nodes().filter { it.deletedAt == null && it.kind != "folder" }) {
+        val recordedNodes = model.notes.nodes().filter { it.deletedAt == null && it.kind != "folder" && it.kind != "diary" }
+        for (node in recordedNodes) {
             val inbox = RecordingService.inbox(context, node.id)
             if (inbox.isNotEmpty()) {
                 val blocks = node.blocks().toMutableList()
@@ -187,7 +212,13 @@ object ExportEngine {
         }
         val nodes = model.notes.nodes()
         val versions = model.notes.allVersions()
-        val blocks = (nodes + versions.mapNotNull { runCatching { decodeNode(JSONObject(it.snapshot)) }.getOrNull() }).flatMap { it.blocks() }.filter { it.uri.isNotBlank() }.distinctBy { it.uri }
+        // An unfinished editor's completed recording remains an inbox item until reopened.
+        val recordingInbox = JSONArray(context.getSharedPreferences("recording_inbox", Context.MODE_PRIVATE).getString("items", "[]") ?: "[]")
+        val recordingMaterials = (0 until recordingInbox.length()).map { recordingInbox.getJSONObject(it) }.mapNotNull { item ->
+            item.optString("path").takeIf { it.isNotBlank() }?.let { path -> NoteBlock(type = "audio", text = "未收取的语音记录", uri = Uri.fromFile(File(path)).toString(), owned = true) }
+        }
+        val blocks = ((nodes + versions.mapNotNull { runCatching { decodeNode(JSONObject(it.snapshot)) }.getOrNull() }).flatMap { it.materialBlocks() } +
+            backgroundLibraryMaterials(context) + recordingMaterials).filter { it.uri.isNotBlank() }.distinctBy { it.uri }
         val file = output(context, "时笺完整备份", "zip")
         val assetMap = JSONObject()
         val missing = blocks.filterNot { readable(context, it) }.map { it.text }.toMutableList()
@@ -200,13 +231,13 @@ object ExportEngine {
             }
             val todos = model.dao.allTodos()
             val prefs = JSONObject().apply { appPreferences(context).all.forEach { (key, value) -> put(key, value) } }
-            val json = JSONObject().put("format", "shijian-backup").put("version", 1).put("databaseVersion", 12).put("todoSchemaVersion", 2).put("createdAt", System.currentTimeMillis())
+            val json = JSONObject().put("format", "shijian-backup").put("version", 1).put("databaseVersion", 14).put("todoSchemaVersion", 2).put("createdAt", System.currentTimeMillis())
                 .put("nodes", JSONArray().apply { nodes.forEach { put(jsonObject(it)) } })
                 .put("versions", JSONArray().apply { versions.forEach { put(jsonObject(it)) } })
                 .put("schedule", JSONArray().apply { model.dao.allSchedule().forEach { put(jsonObject(it)) } })
                 .put("boards", JSONArray().apply { todos.forEach { put(jsonObject(it.board)) } })
                 .put("tasks", JSONArray().apply { todos.flatMap { it.items }.forEach { put(jsonObject(it)) } })
-                .put("preferences", prefs).put("assets", assetMap).put("missing", JSONArray(missing))
+                .put("preferences", prefs).put("recordingInbox", recordingInbox).put("assets", assetMap).put("missing", JSONArray(missing))
             zip.putNextEntry(ZipEntry("backup.json")); zip.write(json.toString().toByteArray()); zip.closeEntry()
         }
         ExportResult(file, missing, assetMap.length())
@@ -245,8 +276,7 @@ object ExportEngine {
                 f.copyTo(dest); restored[source] = Uri.fromFile(dest).toString()
             }
             fun remap(node: NoteNode): NoteNode {
-                val blocks = node.blocks().map { b -> restored[b.uri]?.let { b.copy(uri = it, owned = true) } ?: b }
-                return node.copy(document = encodeBlocks(blocks), text = blockPlainText(blocks))
+                return node.remapMaterials(restored)
             }
             val notes = array("nodes").map { remap(decodeNode(it)) }
             require(notes.map { it.id }.distinct().size == notes.size) { "备份包含重复记录" }
@@ -263,6 +293,14 @@ object ExportEngine {
             val legacyTodos = j.optInt("todoSchemaVersion", 0) < 2 || j.optInt("databaseVersion", 0) < 12
             val boards = if (legacyTodos) emptyList() else array("boards").map { b -> TodoBoard(id = b.getLong("id"), summary = b.getString("summary"), reminderAt = b.nullLong("reminderAt"), dueDate = b.nullLong("dueDate"), expanded = b.optBoolean("expanded"), reminderTriggered = b.optBoolean("reminderTriggered"), reminderRule = b.nullString("reminderRule"), reminderBaseAt = b.nullLong("reminderBaseAt"), reminderCustomDays = b.optInt("reminderCustomDays"), createdAt = b.getLong("createdAt"), archived = b.optBoolean("archived"), position = b.optInt("position"), boardType = b.optString("boardType", "LIST"), pinned = b.optBoolean("pinned"), deletedAt = b.nullLong("deletedAt"), timeMode = b.getString("timeMode"), reminderSkipAt = b.nullLong("reminderSkipAt")) }
             val tasks = if (legacyTodos) emptyList() else array("tasks").map { t -> TodoItem(id = t.getLong("id"), boardId = t.getLong("boardId"), text = t.getString("text"), completed = t.optBoolean("completed"), position = t.optInt("position"), important = t.optBoolean("important"), reminderAt = t.nullLong("reminderAt"), reminderTriggered = t.optBoolean("reminderTriggered"), plannedDay = t.nullLong("plannedDay"), dueAt = t.nullLong("dueAt"), deletedAt = t.nullLong("deletedAt"), reminderRule = t.nullString("reminderRule"), reminderBaseAt = t.nullLong("reminderBaseAt"), reminderCustomDays = t.optInt("reminderCustomDays"), reminderSkipAt = t.nullLong("reminderSkipAt")) }
+            val savedPreferences = JSONObject(j.getJSONObject("preferences").toString())
+            remapBackgroundPreferences(savedPreferences, restored)
+            val savedRecordings = j.optJSONArray("recordingInbox") ?: JSONArray()
+            for (index in 0 until savedRecordings.length()) {
+                val item = savedRecordings.getJSONObject(index)
+                val source = Uri.fromFile(File(item.optString("path"))).toString()
+                restored[source]?.let { item.put("path", Uri.parse(it).path.orEmpty()) }
+            }
             require(boards.all { it.timeMode in setOf("UNIFIED", "INDEPENDENT") }) { "未知待办框类型" }
             require(boards.map { it.id }.distinct().size == boards.size && tasks.map { it.id }.distinct().size == tasks.size) { "备份包含重复待办" }
             require(tasks.all { task -> boards.any { it.id == task.boardId } }) { "待办清单结构不完整" }
@@ -280,9 +318,10 @@ object ExportEngine {
                 model.dao.restoreSchedule(schedules); model.dao.restoreBoards(boards); model.dao.restoreItems(tasks)
             }
             val pref = appPreferences(context).edit().clear()
-            val saved = j.getJSONObject("preferences")
+            val saved = savedPreferences
             saved.keys().forEach { key -> when (val value = saved.get(key)) { is Boolean -> pref.putBoolean(key, value); is Int -> pref.putInt(key, value); is Long -> pref.putLong(key, value); is String -> pref.putString(key, value) } }
             pref.commit()
+            context.getSharedPreferences("recording_inbox", Context.MODE_PRIVATE).edit().putString("items", savedRecordings.toString()).commit()
             // Cancel previous reminders; only reschedule active future reminders from the imported data.
             oldSchedules.forEach { ReminderScheduler.cancel(context, it.id) }
             oldTodos.forEach { b -> ReminderScheduler.cancelTodoBoard(context, b.board.id); b.items.forEach { ReminderScheduler.cancelTodo(context, it.id) } }

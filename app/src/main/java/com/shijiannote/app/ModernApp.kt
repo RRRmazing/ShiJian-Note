@@ -46,9 +46,15 @@ import org.json.JSONObject
     var parent by rememberSaveable { mutableStateOf<String?>(null) }
     var memoryVisit by rememberSaveable { mutableIntStateOf(0) }
     var editorSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var roadSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var roadPreviewSnapshot by rememberSaveable { mutableStateOf<String?>(null) }
+    var diaryInboxOpen by rememberSaveable { mutableStateOf(false) }
+    var diaryInboxDay by rememberSaveable { mutableStateOf<Long?>(null) }
     var editingNew by rememberSaveable { mutableStateOf(false) }
     var reveal by remember { mutableStateOf("") }
-    val editorStack = remember { mutableStateListOf<String>() }
+    val editorStack = rememberSaveable(saver = androidx.compose.runtime.saveable.listSaver<androidx.compose.runtime.snapshots.SnapshotStateList<String>, String>(
+        save = { it.toList() }, restore = { it.toMutableStateList() }
+    )) { mutableStateListOf<String>() }
     val libraryState = rememberSaveableStateHolder()
     var selecting by remember { mutableStateOf(false) }
     var addMemory by remember { mutableStateOf(false) }
@@ -87,7 +93,7 @@ import org.json.JSONObject
     var importDestination by remember { mutableStateOf<ImportDestination?>(null) }
     var importTitle by remember { mutableStateOf("自主导入") }
     var pendingImport by remember { mutableStateOf(false) }
-    var exportIds by remember { mutableStateOf<Set<String>?>(null) }
+    var exportIds by rememberSaveable { mutableStateOf<ArrayList<String>?>(null) }
     var backup by remember { mutableStateOf(false) }
     var exportTasks by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<Set<String>?>(null) }
@@ -95,11 +101,42 @@ import org.json.JSONObject
     val scope = rememberCoroutineScope()
     val record by RecordingService.state.collectAsState()
     val editor = editorSnapshot?.let { decodeNode(JSONObject(it)) }
-
-    fun open(note: NoteNode, new: Boolean = false, query: String = "") {
-        editorSnapshot = jsonObject(note).toString(); editingNew = new; reveal = query; selecting = false
+    val road = roadSnapshot?.let { snapshot ->
+        val initial = decodeNode(JSONObject(snapshot))
+        nodes.find { it.id == initial.id && it.deletedAt == null } ?: initial
     }
-    fun export(ids: Set<String>) { if (ids.isNotEmpty()) exportIds = ids else scope.launch { snackbar.showSnackbar("没有可导出的内容") } }
+    val roadPreview = roadPreviewSnapshot?.let { decodeNode(JSONObject(it)) }
+
+    fun openSummary(note: NoteNode, new: Boolean = false, query: String = "", fromRoad: Boolean = false) {
+        // Only a temporary position preview reuses editor state; a fresh open reads current persisted content.
+        libraryState.removeState("editor-${note.id}")
+        if (!fromRoad) roadSnapshot = null
+        editorSnapshot = jsonObject(note).toString(); editingNew = new || (note.kind == "diary" && !note.hasNoteContent()); reveal = query; selecting = false
+    }
+    fun openRoad(note: NoteNode, query: String = "") {
+        roadSnapshot = jsonObject(note).toString(); editorSnapshot = null; reveal = query; selecting = false
+    }
+    fun open(note: NoteNode, new: Boolean = false, query: String = "") {
+        if (note.kind == "diary" && note.diaryInboxItems().isNotEmpty() &&
+            (!note.hasDiaryContent() || (query.isNotBlank() && !SearchRules.noteText(note.copy(diaryInbox = "")).contains(query, true)))) {
+            diaryInboxDay = note.day; diaryInboxOpen = true
+            editorSnapshot = null; roadSnapshot = null
+            return
+        }
+        if (note.kind == "diary" && (note.diaryRoadEnabled || note.diaryMoments().isNotEmpty())) openRoad(note, query)
+        else openSummary(note, new, query, fromRoad = roadSnapshot != null)
+    }
+    fun restorePreviousEditor() {
+        val page = JSONObject(editorStack.removeAt(editorStack.lastIndex))
+        val previous = decodeNode(page.getJSONObject("editor"))
+        roadSnapshot = page.nullString("road")
+        scope.launch {
+            val current = if (previous.kind == "diary_moment") model.getDiaryMomentNote(previous.day ?: dayMillis(), previous.id.removePrefix("moment-"))
+            else model.notes.node(previous.id)
+            openSummary(current ?: previous, query = page.optString("query"), fromRoad = roadSnapshot != null)
+        }
+    }
+    fun export(ids: Set<String>) { if (ids.isNotEmpty()) exportIds = ArrayList(ids) else scope.launch { snackbar.showSnackbar("没有可导出的内容") } }
     fun startSearchAt(originParent: String?) {
         // Keep state while a result is open, but start each new search with fresh filters.
         libraryState.removeState("search-$searchSession")
@@ -146,7 +183,7 @@ import org.json.JSONObject
     }
     fun detachTree(destination: String?) {
         parent = destination
-        editorSnapshot = null; editorStack.clear(); reveal = ""; tab = 3; memoryVisit++
+        editorSnapshot = null; roadSnapshot = null; editorStack.clear(); reveal = ""; tab = 3; memoryVisit++
         structure = false; structureFolder = false; structureEntry = null; structureSearchSnapshot = null; structureHistory = "[]"
         search = false; searchFolder = false; treeReturnChoice = false; selecting = false
     }
@@ -164,7 +201,8 @@ import org.json.JSONObject
     LaunchedEffect(recallRequest) {
         if (recallRequest != null && recallRequest != handledRecallRequest) {
             handledRecallRequest = recallRequest
-            editorSnapshot = null; editorStack.clear(); reveal = ""
+            editorSnapshot = null; roadSnapshot = null; editorStack.clear(); reveal = ""
+            roadPreviewSnapshot = null; diaryInboxOpen = false
             search = false; searchFolder = false; structure = false; structureFolder = false; structureSearchSnapshot = null
             general = false; trash = false; advanced = false; about = false; failurePage = false
             importDestination = null; selecting = false; addMemory = false
@@ -178,7 +216,7 @@ import org.json.JSONObject
         val action = (context as? android.app.Activity)?.intent?.action
         (context as? android.app.Activity)?.intent?.action = Intent.ACTION_MAIN
         if (action == "com.shijiannote.app.NEW_MEMORY") { tab = 3; open(model.newNote("memory"), true) }
-        if (action == "com.shijiannote.app.NEW_DIARY") { tab = 2; val day = dayMillis(); val existing = model.notes.diary(day); open(existing ?: model.newNote("diary", day = day), existing == null) }
+        if (action == "com.shijiannote.app.NEW_DIARY") { tab = 2; openRoad(model.currentDiary(dayMillis())) }
     }
     LaunchedEffect(Unit) {
         while (true) {
@@ -187,12 +225,12 @@ import org.json.JSONObject
             delay(60_000)
         }
     }
-    BackHandler(enabled = editor == null && (addMemory || general || trash || advanced || about || importDestination != null)) {
+    BackHandler(enabled = editor == null && road == null && (addMemory || general || trash || advanced || about || importDestination != null)) {
         when { addMemory -> addMemory = false; importDestination != null -> importDestination = null; general -> general = false; trash -> trash = false; about -> about = false; else -> advanced = false }
     }
     YouthTheme {
         Scaffold(containerColor = Mist, snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
-            if (editor == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
+            if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && !search && !structure && !(tab == 2 && diaryPast) && !failurePage && !general && !trash && !advanced && !about && importDestination == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 val labels = listOf("时间表", "待办", "日记", "记忆", "设置")
                 val icons = listOf(Icons.Default.CalendarMonth, Icons.Default.CheckCircleOutline, Icons.Default.MenuBook, Icons.Default.FolderOpen, Icons.Default.Settings)
                 val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.3f
@@ -200,15 +238,50 @@ import org.json.JSONObject
             }
         }) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
-                if (editor != null) RichNoteEditor(editor, model, editingNew, reveal,
+                if (roadPreview != null) {
+                    val previewParent = model.currentDiary(roadPreview.day ?: dayMillis())
+                    val original = previewParent.diaryMoments().find { "moment-${it.id}" == roadPreview.id }
+                    DiaryRoadScreen(previewParent, model, onBack = { roadPreviewSnapshot = null },
+                        onSummary = {}, onMoment = { _, _ -> },
+                        previewMoment = DiaryMoment(id = roadPreview.id.removePrefix("moment-"), createdAt = roadPreview.createdAt,
+                            title = roadPreview.title, text = roadPreview.text, document = roadPreview.document,
+                            occurredAt = roadPreview.diaryOccurredAt, sentAt = original?.sentAt),
+                        onPreviewBack = { roadPreviewSnapshot = null })
+                }
+                else if (editor != null) libraryState.SaveableStateProvider("editor-${editor.id}") { RichNoteEditor(editor, model, editingNew, reveal,
                     onBack = {
-                        if (editorStack.isEmpty()) {
+                        if (road != null && (editor.id == road.id || (editor.kind == "diary_moment" && editor.parentId == road.id))) {
+                            editorSnapshot = null; reveal = ""
+                            val current = model.currentDiary(road.day ?: dayMillis())
+                            if (road.day != dayMillis() && !current.diaryRoadEnabled && current.diaryMoments().isEmpty()) roadSnapshot = null
+                        } else if (editorStack.isEmpty()) {
                             if (structure && structureSearchSnapshot == null && editor.id == structureEntry) treeReturnChoice = true
                             else { editorSnapshot = null; reveal = "" }
                         }
-                        else { val id = editorStack.removeAt(editorStack.lastIndex); scope.launch { model.notes.node(id)?.let { open(it) } ?: run { editorSnapshot = null } } }
+                        else restorePreviousEditor()
                     },
-                    onOpen = { target -> scope.launch { runCatching { model.flush(editor.id); editorStack.add(editor.id); open(target) }.onFailure { snackbar.showSnackbar("请先保存当前记录") } } }, onExport = ::export)
+                    onOpen = { target -> scope.launch {
+                        runCatching {
+                            model.flush(editor.id)
+                            val current = if (editor.kind == "diary_moment") model.getDiaryMomentNote(editor.day ?: dayMillis(), editor.id.removePrefix("moment-"))
+                            else model.notes.node(editor.id)
+                            editorStack.add(JSONObject().put("editor", jsonObject(current ?: editor)).put("road", roadSnapshot ?: JSONObject.NULL).put("query", reveal).toString())
+                            open(target)
+                        }.onFailure { snackbar.showSnackbar("请先保存当前记录") }
+                    } }, onExport = ::export,
+                    onDiaryRoad = { note -> openRoad(model.currentDiary(note.day ?: dayMillis())) },
+                    onMomentPosition = { moment -> roadPreviewSnapshot = jsonObject(moment).toString() },
+                    onDiaryInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true; editorSnapshot = null }) }
+                else if (diaryInboxOpen) DiaryInboxScreen(model, diaryInboxDay,
+                    onBack = { diaryInboxOpen = false },
+                    onEdit = { draft -> editorStack.clear(); openSummary(draft, true, fromRoad = roadSnapshot != null) })
+                else if (road != null) libraryState.SaveableStateProvider("diary-road-${road.id}") {
+                    DiaryRoadScreen(road, model,
+                        onBack = { if (editorStack.isNotEmpty()) restorePreviousEditor() else { roadSnapshot = null; reveal = "" } },
+                        onSummary = { note -> openSummary(note, !note.hasDiaryContent(), reveal, fromRoad = true) },
+                        onMoment = { moment, isNew -> openSummary(moment, isNew, reveal, fromRoad = true) },
+                        onExport = ::export, onInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true })
+                }
                 else when {
                     failurePage -> ImageFailuresScreen(model, { failurePage = false }, { open(it, true) })
                     structure && structureSearchSnapshot == null && structureFolder -> libraryState.SaveableStateProvider("structure-folder-$structureRoot-$structureFolderParent") {
@@ -253,7 +326,9 @@ import org.json.JSONObject
                         when (tab) {
                             0 -> ScheduleLibrary(model, { event -> scheduleEdit = event; scheduleDialog = true }, ::startSearch, { exportTasks = "schedule" }, { selecting = it })
                             1 -> TodoLibrary(model, { board -> todoDay = null; todoTaskEdit = null; todoEdit = board; todoDialog = true }, ::startSearch, { exportTasks = "todo" }, { selecting = it }, { todoView = it })
-                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, ::startSearch, ::export, { deleting = it }, { selecting = it }, pastPage = diaryPast, onPastChange = { diaryPast = it })
+                            2 -> DiaryLibrary(model, { n, isNew -> open(n, isNew) }, ::startSearch, ::export, { deleting = it }, { selecting = it }, pastPage = diaryPast, onPastChange = { diaryPast = it },
+                                onRoad = { openRoad(it) }, onSummary = { note, isNew -> openSummary(note, isNew) },
+                                onInbox = { day -> diaryInboxDay = day; diaryInboxOpen = true })
                             else -> libraryState.SaveableStateProvider("memory-$memoryVisit-$parent") {
                                 if (spacesReady) MemoryLibrary(model, parent, { parent = it }, { open(it) }, ::export, ::startSearch, { selecting = it }, { deleting = it }, { showStructure(parent) })
                                 else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -263,9 +338,20 @@ import org.json.JSONObject
                     else -> SettingsHome({ general = true }, { trash = true }, { backup = true }, { advanced = true }, { about = true }, { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))) })
                 }
                 if (editor == null && record.running) Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(16.dp), color = Peach) {
-                    TextButton(onClick = { scope.launch { model.notes.node(record.owner)?.let { open(it, true) } } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
+                    TextButton(onClick = { scope.launch {
+                        if (record.owner.startsWith("moment-")) {
+                            val parentNote = model.notes.nodes().firstOrNull { node -> node.deletedAt == null &&
+                                (node.diaryMoments().any { "moment-${it.id}" == record.owner } || node.diaryInboxItems().any { "moment-${it.moment?.id}" == record.owner }) }
+                            parentNote?.let { parentNote ->
+                                val current = model.currentDiary(parentNote.day ?: dayMillis())
+                                model.getDiaryMomentNote(current.day ?: dayMillis(), record.owner.removePrefix("moment-"))?.let { moment ->
+                                    editorStack.clear(); openRoad(current); openSummary(moment, true, fromRoad = true)
+                                }
+                            }
+                        } else model.notes.node(record.owner)?.let { open(it, true) }
+                    } }) { Text("录音中 ${audioTime(record.elapsed)} · 返回记录") }
                 }
-                if (editor == null && tab < 4 && !(tab == 2 && diaryPast) && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
+                if (editor == null && road == null && !diaryInboxOpen && roadPreview == null && tab < 4 && !(tab == 2 && diaryPast) && (tab != 3 || parent != null) && (tab != 1 || todoView != "repeat") && !selecting && !search && !structure && !failurePage && !general && !trash && !advanced && !about && importDestination == null) {
                     if (addMemory && tab == 3) {
                         BackHandler { addMemory = false }
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable { addMemory = false })
@@ -282,7 +368,7 @@ import org.json.JSONObject
                         when (tab) {
                             0 -> { scheduleEdit = null; scheduleDialog = true }
                             1 -> { todoEdit = null; todoTaskEdit = null; todoDay = when (todoView) { "today" -> dayMillis(); "tomorrow" -> dayMillis(java.time.LocalDate.now().plusDays(1)); else -> null }; todoDialog = true }
-                            2 -> scope.launch { val day = dayMillis(); val existing = model.notes.diary(day); open(existing ?: model.newNote("diary", day = day), existing == null) }
+                            2 -> openRoad(model.currentDiary(dayMillis()))
                             3 -> addMemory = !addMemory
                         }
                     }, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp), containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = Sky) { Icon(if (addMemory) Icons.Default.Close else Icons.Default.Add, "新增") }
@@ -318,7 +404,11 @@ import org.json.JSONObject
                     else model.trash(ids) { group -> scope.launch { val result = snackbar.showSnackbar("已移到回收站", "撤销", duration = SnackbarDuration.Long); if (result == SnackbarResult.ActionPerformed) model.restore(group) } }
                 })
         }
-        exportIds?.let { ids -> NoteExportDialog(model, ids, { exportIds = null }) }
+        exportIds?.let { ids ->
+            if (ids.all { id -> nodes.any { it.id == id && it.kind == "diary" } || road?.let { it.id == id } == true || editor?.let { it.id == id && it.kind == "diary" } == true })
+                DiaryExportDialog(model, ids.toSet(), { exportIds = null })
+            else NoteExportDialog(model, ids.toSet(), { exportIds = null })
+        }
         if (backup) BackupDialog(model, { backup = false })
         exportTasks?.let { type -> TaskExportDialog(model, type, { exportTasks = null }) }
         if (pendingImport) SoftDialog("导入到待办清单", { pendingImport = false }) { OutlinedTextField(importTitle, { importTitle = it }, label = { Text("清单名称") }); Button(onClick = { pendingImport = false; importDestination = ImportDestination.TODO }) { Text("继续") } }

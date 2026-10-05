@@ -6,11 +6,87 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.*
 import java.io.File
+
+@Composable fun DiaryExportDialog(model: WorkspaceModel, ids: Set<String>, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val nodes by model.nodes.collectAsState()
+    val selected = nodes.filter { it.id in ids && it.kind == "diary" && it.deletedAt == null }
+    val scope = rememberCoroutineScope()
+    var road by rememberSaveable(ids) { mutableStateOf(true) }
+    var diary by rememberSaveable(ids) { mutableStateOf(true) }
+    var format by rememberSaveable(ids) { mutableStateOf("html") }
+    var busy by rememberSaveable { mutableStateOf(false) }
+    var status by rememberSaveable { mutableStateOf("") }
+    var result by remember { mutableStateOf<ExportResult?>(null) }
+    var preview by remember { mutableStateOf<String?>(null) }
+    var pendingOptions by rememberSaveable(stateSaver = Saver<DiaryZipOptions, List<Any>>(
+        save = { listOf(it.road, it.diary, it.format, it.sort) },
+        restore = { DiaryZipOptions(it[0] as Boolean, it[1] as Boolean, it[2] as String, it[3] as String) }
+    )) { mutableStateOf(DiaryZipOptions()) }
+    var destination by rememberSaveable { mutableStateOf<String?>(null) }
+    val available = DiaryZipExport.counts(selected)
+    val options = DiaryZipOptions(road && available.road > 0, diary && available.diary > 0, format,
+        appPreferences(context).getString("diary_time_sort", "occurred")?.takeIf { it in setOf("occurred", "sent") } ?: "occurred")
+    val counts = DiaryZipExport.counts(selected, options)
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri == null) busy = false
+        else destination = uri.toString()
+    }
+    LaunchedEffect(destination) {
+        destination?.let { location ->
+            val uri = Uri.parse(location)
+            runCatching {
+                model.flushAll()
+                val latest = model.notes.nodes()
+                val snapshot = latest.filter { it.id in ids && it.kind == "diary" && it.deletedAt == null }
+                val zip = DiaryZipExport.export(context, snapshot, latest, pendingOptions)
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { out -> zip.file.inputStream().use { it.copyTo(out) } }
+                        ?: error("无法写入所选保存位置")
+                }
+                zip
+            }.onSuccess { result = it; status = "已保存到：$uri" }
+                .onFailure { if (it is CancellationException) throw it; status = "导出失败：${it.message ?: "请重试"}" }
+            busy = false; destination = null
+        }
+    }
+    SoftDialog("导出日记", { if (!busy) onClose() }) {
+        Text("已选择 ${available.selected} 天", fontSize = 18.sp)
+        Text("小路：${available.road} 天有内容\n日记：${available.diary} 天有内容", color = Quiet, fontSize = 13.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(options.road, { road = it; result = null }, enabled = !busy && available.road > 0)
+            Column(Modifier.weight(1f)) { Text("小路"); if (available.road == 0) Text("暂无片段", color = Quiet, fontSize = 12.sp) }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(options.diary, { diary = it; result = null }, enabled = !busy && available.diary > 0)
+            Column(Modifier.weight(1f)) { Text("日记"); if (available.diary == 0) Text("暂无正文", color = Quiet, fontSize = 12.sp) }
+        }
+        ChoiceRow("阅读格式", format, listOf("html" to "网页 HTML", "md" to "Markdown", "txt" to "纯文本 TXT")) { if (!busy) { format = it; result = null } }
+        Text("将导出 ${counts.included} 天，另 ${counts.selected - counts.included} 天没有所选内容。", color = Sky, fontSize = 13.sp)
+        Text("ZIP 包含所选内容的原始图片、语音和文件；解压后打开 index.${format} 阅读。收纳箱与回收站内容不会自动导出。", color = Quiet, fontSize = 12.sp)
+        Button(onClick = {
+            pendingOptions = options; busy = true; status = ""; result = null
+            save.launch("时笺日记_${java.time.LocalDate.now()}_共${counts.included}天.zip")
+        }, enabled = !busy && counts.included > 0, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在导出…" else "导出并选择保存位置") }
+        result?.let { generated ->
+            Text("ZIP · ${mediaSize(generated.file.length())} · ${generated.materialCount} 个素材", color = Sky)
+            OutlinedButton(onClick = { scope.launch {
+                runCatching { withContext(Dispatchers.IO) { java.util.zip.ZipFile(generated.file).use { zip -> zip.entries().asSequence().joinToString("\n") { it.name }.take(20000) } } }
+                    .onSuccess { preview = it }.onFailure { status = "目录读取失败：${it.message}" }
+            } }) { Text("查看包内目录") }
+        }
+        if (status.isNotBlank()) Text(status, color = if (status.startsWith("导出失败")) MaterialTheme.colorScheme.error else Quiet, fontSize = 12.sp)
+        TextButton(onClick = onClose, enabled = !busy) { Text("返回") }
+    }
+    preview?.let { content -> SoftDialog("导出包目录", { preview = null }) { Text(content, fontSize = 12.sp); TextButton(onClick = { preview = null }) { Text("关闭") } } }
+}
 
 @Composable fun NoteExportDialog(model: WorkspaceModel, ids: Set<String>, onClose: () -> Unit) {
     val context = LocalContext.current
@@ -82,7 +158,7 @@ import java.io.File
     } }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { restoreUri = it }
     SoftDialog("备份与恢复", { if (!busy) onClose() }) {
-        Text("备份包括记录、分类树、格式、历史版本、回收站、待办、时间表、设置，以及时笺保存的图片和录音。", fontSize = 13.sp)
+        Text("备份包括记录、分类树、格式、历史版本、回收站、日记收纳箱、导入背景库、待办、时间表、设置，以及时笺保存的图片和录音。", fontSize = 13.sp)
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(images, { images = it; result = null }, enabled = !busy); Text("额外打包引用图片", Modifier.weight(1f)) }
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(files, { files = it; result = null }, enabled = !busy); Text("额外打包绑定文件", Modifier.weight(1f)) }
         Text("没有打包的外部引用，在换设备后可能需要重新绑定。", color = Quiet, fontSize = 12.sp)

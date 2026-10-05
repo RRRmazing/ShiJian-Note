@@ -26,13 +26,14 @@ class TodoMigrationInstrumentedTest {
         initial.noteDao().version(NoteVersion(nodeId = "preserved", snapshot = "保留版本"))
         initial.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { sqlite ->
+            listOf("diaryRoad", "diaryRoadTheme", "diaryRoadBackground", "diaryRoadEnabled", "diaryRoadLayout", "diaryInbox", "diaryOccurredAt", "diaryTrashExpiresAt").forEach { sqlite.execSQL("ALTER TABLE note_nodes DROP COLUMN $it") }
             listOf("timeMode", "reminderSkipAt").forEach { sqlite.execSQL("ALTER TABLE todo_boards DROP COLUMN $it") }
             listOf("reminderRule", "reminderBaseAt", "reminderCustomDays", "reminderSkipAt").forEach { sqlite.execSQL("ALTER TABLE todo_items DROP COLUMN $it") }
             sqlite.execSQL("DROP TABLE legacy_todo_alarms")
             sqlite.execSQL("DROP TABLE room_master_table")
             sqlite.version = 11
         }
-        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration11To12).build()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration11To12, AppDatabase.migration12To13, AppDatabase.migration13To14).build()
         val newId: Long
         try {
             assertTrue(migrated.appDao().allTodos().isEmpty())
@@ -48,7 +49,7 @@ class TodoMigrationInstrumentedTest {
             assertEquals(oldBoards.map { "board" to it }.toSet() + oldItems.map { "item" to it }.toSet(), queued)
             newId = migrated.appDao().insertTodoBoard(TodoBoard(summary = "新版清单", timeMode = "INDEPENDENT"))
         } finally { migrated.close() }
-        val reopened = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration11To12).build()
+        val reopened = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.migration11To12, AppDatabase.migration12To13, AppDatabase.migration13To14).build()
         try { assertEquals("新版清单", reopened.appDao().getTodoBoard(newId)!!.summary) }
         finally { reopened.close(); context.deleteDatabase(name) }
     }

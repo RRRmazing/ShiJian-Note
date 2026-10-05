@@ -55,7 +55,15 @@ object SearchRules {
     }
 
     fun noteText(node: NoteNode): String = listOf(node.title, node.text, node.tags,
-        runCatching { node.blocks().joinToString(" ") { it.text } }.getOrDefault("")).joinToString("\n")
+        runCatching { node.blocks().joinToString(" ") { it.text } }.getOrDefault(""),
+        runCatching { node.diaryMoments().joinToString("\n") { moment ->
+            moment.title + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
+        } }.getOrDefault(""),
+        runCatching { node.diaryInboxItems().joinToString("\n") { item ->
+            (listOfNotNull(item.moment) + decodeDiaryMoments(item.road)).joinToString("\n") { moment ->
+                moment.title + "\n" + moment.text + "\n" + decodeBlocks(moment.document, moment.text).joinToString(" ") { it.text }
+            }
+        } }.getOrDefault("")).joinToString("\n")
 
     fun notes(nodes: List<NoteNode>, snapshots: List<SearchNoteSnapshot>, module: Int, parent: String?, input: SearchInput, zone: ZoneId = ZoneId.systemDefault()): List<SearchNoteHit> {
         if (!canSearch(input)) return emptyList()

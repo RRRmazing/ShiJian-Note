@@ -97,14 +97,20 @@ private data class SettingsEntry(val title: String, val subtitle: String, val ic
     }
 }
 
-private suspend fun unusedAssets(context: android.content.Context, model: WorkspaceModel): List<File> = withContext(Dispatchers.IO) {
+internal suspend fun unusedAssets(context: android.content.Context, model: WorkspaceModel): List<File> = withContext(Dispatchers.IO) {
     model.flushAll()
     val all = model.notes.nodes() + model.notes.allVersions().map { decodeNode(org.json.JSONObject(it.snapshot)) }
     val drafts = File(context.filesDir, "drafts").listFiles().orEmpty().filter { it.name.endsWith(".json") || it.name.endsWith(".json.bak") }
         .map { File(it.path.removeSuffix(".bak")) }.distinct().map { file -> decodeNode(org.json.JSONObject(android.util.AtomicFile(file).openRead().bufferedReader().use { it.readText() })) }
-    val keep = (all + drafts).flatMap { it.blocks() }.mapNotNull { Uri.parse(it.uri).path }.toMutableSet()
+    // Android may expose the same app file through /data/user/0 and /data/data aliases.
+    fun canonical(path: String): String = File(path).canonicalPath
+    val keep = (all + drafts).flatMap { it.materialBlocks() }.mapNotNull { Uri.parse(it.uri).path }.map(::canonical).toMutableSet()
     val inbox = org.json.JSONArray(context.getSharedPreferences("recording_inbox", android.content.Context.MODE_PRIVATE).getString("items", "[]"))
-    for (i in 0 until inbox.length()) keep += inbox.getJSONObject(i).optString("path")
+    for (i in 0 until inbox.length()) keep += canonical(inbox.getJSONObject(i).optString("path"))
+    val preferences = appPreferences(context)
+    val backgrounds = org.json.JSONArray(preferences.getString("diary_background_library", "[]") ?: "[]")
+    for (index in 0 until backgrounds.length()) Uri.parse(backgrounds.getJSONObject(index).optString("uri")).path?.let { keep += canonical(it) }
+    Uri.parse(preferences.getString("diary_default_background_uri", "").orEmpty()).path?.let { keep += canonical(it) }
     val assets = File(context.filesDir, "assets").canonicalFile
     assets.listFiles().orEmpty().filter { it.isFile && it.canonicalFile.parentFile == assets && it.canonicalPath !in keep && System.currentTimeMillis() - it.lastModified() > 86_400_000L }
 }
@@ -154,11 +160,15 @@ private fun trashNoteGroups(records: List<NoteNode>): List<List<NoteNode>> {
 }
 
 @Composable fun TrashScreen(model: WorkspaceModel, onBack: () -> Unit) {
+    LaunchedEffect(Unit) { model.cleanupDiaryRetention().join() }
     val nodes by model.nodes.collectAsState()
     val schedules by model.schedules.collectAsState()
     val todos by model.todos.collectAsState()
     var page by rememberSaveable { mutableStateOf("home") }
     var permanent by remember { mutableStateOf<TrashDeletion?>(null) }
+    var retentionSettings by remember { mutableStateOf(false) }
+    var retentionDays by remember { mutableStateOf(model.diaryTrashRetentionDays().toString()) }
+    var pendingRetention by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
     val deletedNotes = nodes.filter { it.deletedAt != null && !MemorySpaces.isRoot(it.id) }
     val diaries = deletedNotes.filter { it.kind == "diary" }
@@ -175,7 +185,9 @@ private fun trashNoteGroups(records: List<NoteNode>): List<List<NoteNode>> {
     val title = when (page) { "schedule" -> "时间表回收站"; "todo" -> "待办回收站"; "diary" -> "日记回收站"; "memory" -> "记忆回收站"; "work" -> "工作回收站"; "life" -> "生活回收站"; else -> "回收站" }
     key(page) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item { PageTitle(title, "删除的内容会保留，直到你永久删除", { back() }) }
+            item { PageTitle(title, if (page == "diary") "整篇日记在这里保留；默认永久保存" else "删除的内容会保留，直到你永久删除", { back() }) {
+                if (page == "diary") IconButton(onClick = { retentionDays = model.diaryTrashRetentionDays().toString(); retentionSettings = true }) { Icon(Icons.Default.Settings, "日记回收保留期限") }
+            } }
             when (page) {
                 "home" -> {
                     item { TrashModuleButton("时间表", deletedSchedules.size) { page = "schedule" } }
@@ -224,6 +236,7 @@ private fun trashNoteGroups(records: List<NoteNode>): List<List<NoteNode>> {
                         val ids = records.map { it.id }.toSet()
                         Text(root.displayTitle(), fontSize = 18.sp)
                         Text(if (page == "diary") "${records.size} 条日记" else "${records.count { it.kind == "folder" }} 个分类 · ${records.count { it.kind != "folder" }} 条记录", color = Quiet, fontSize = 12.sp)
+                        if (page == "diary") Text(root.diaryTrashExpiresAt?.let { "保留至 ${dateText(it, true)}" } ?: "永久保留", color = Quiet, fontSize = 12.sp)
                         Row {
                             TextButton(onClick = { model.restore(root.deleteGroup, ids) }) { Text("恢复") }
                             TextButton(onClick = { permanent = TrashDeletion("note", root.deleteGroup, ids) }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("永久删除") }
@@ -233,6 +246,19 @@ private fun trashNoteGroups(records: List<NoteNode>): List<List<NoteNode>> {
             }
         }
     }
+    if (retentionSettings) SoftDialog("日记回收保留期限", { retentionSettings = false }) {
+        Text("只影响以后移入回收站的整篇日记，现有 ${diaries.size} 篇日记的保留期限不变。收纳箱使用独立设置。", color = Quiet, fontSize = 13.sp)
+        ChoiceRow("保留方式", if (retentionDays == "0") "forever" else "days", listOf("forever" to "永久保存", "days" to "指定天数")) { retentionDays = if (it == "forever") "0" else "30" }
+        if (retentionDays != "0") OutlinedTextField(retentionDays, { value -> retentionDays = value.filter(Char::isDigit).take(5) }, label = { Text("保留天数") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("有期限的项目从删除时刻起计时，到期后自动彻底删除。", color = Quiet, fontSize = 12.sp)
+        Button(onClick = { pendingRetention = retentionDays.toIntOrNull(); retentionSettings = false }, enabled = retentionDays.toIntOrNull()?.let { it in 0..36500 } == true, modifier = Modifier.fillMaxWidth()) { Text("下一步") }
+    }
+    pendingRetention?.let { days -> SoftDialog("确认保留设置", { pendingRetention = null }) {
+        Text(if (days == 0) "以后移入日记回收站的整篇日记将永久保留。" else "以后移入日记回收站的整篇日记将在删除 $days 天后自动彻底删除。")
+        Text("现有 ${diaries.size} 篇日记仍沿用原来的保留期限。", color = Quiet, fontSize = 13.sp)
+        Button(onClick = { model.setDiaryRetentionDays(model.diaryInboxRetentionDays(), days); pendingRetention = null }) { Text("确认") }
+        TextButton(onClick = { pendingRetention = null; retentionSettings = true }) { Text("返回修改") }
+    } }
     permanent?.let { target -> SoftDialog("永久删除", { permanent = null }) {
         Text("永久删除后无法从回收站恢复。")
         Button(onClick = {

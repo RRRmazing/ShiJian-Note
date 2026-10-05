@@ -1,10 +1,12 @@
 package com.shijiannote.app
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.shijiannote.app.data.NoteNode
@@ -14,6 +16,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import java.time.LocalDate
+import java.io.File
 
 class DiaryLibraryInteractionTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
@@ -27,7 +30,7 @@ class DiaryLibraryInteractionTest {
 
     @Test fun diarySearchStartsWithAllEvenWhenHomeShowsFavorites(): Unit = runBlocking {
         val model = model()
-        val favorite = NoteNode(id = "ui-search-favorite", kind = "diary", day = dayMillis(), title = "搜索独立条件收藏", favorite = true)
+        val favorite = NoteNode(id = "ui-search-favorite", kind = "diary", day = dayMillis(LocalDate.now().minusDays(1)), title = "搜索独立条件收藏", favorite = true)
         val normal = favorite.copy(id = "ui-search-unfavorite", title = "搜索独立条件普通", favorite = false)
         model.notes.putAll(listOf(favorite, normal))
         try {
@@ -84,7 +87,7 @@ class DiaryLibraryInteractionTest {
 
     @Test fun heartFiltersInPlaceAndSearchDoesNotResetItsDisplay(): Unit = runBlocking {
         val model = model()
-        val favorite = NoteNode(id = "ui-diary-favorite", kind = "diary", day = dayMillis(), title = "收藏筛选样本", text = "正文第一行\n正文第二行\n正文第三行", favorite = true, mood = "平静", tags = "旅行 阅读")
+        val favorite = NoteNode(id = "ui-diary-favorite", kind = "diary", day = dayMillis(LocalDate.now().minusDays(1)), title = "收藏筛选样本", text = "正文第一行\n正文第二行\n正文第三行", favorite = true, mood = "平静", tags = "旅行 阅读")
         val normal = favorite.copy(id = "ui-diary-normal", title = "普通日记样本", favorite = false, tags = "", mood = "")
         model.notes.putAll(listOf(favorite, normal))
         var searches = 0
@@ -131,7 +134,8 @@ class DiaryLibraryInteractionTest {
                 var recall by remember { mutableStateOf(false) }
                 DiaryLibrary(model, onOpen = { _, _ -> }, onSearch = {}, onExport = {}, onTrash = {}, onSelection = {}, pastPage = recall, onPastChange = { recall = it })
             } } }
-            rule.waitUntil(5_000) { rule.onAllNodesWithText(current.title).fetchSemanticsNodes().isNotEmpty() }
+            rule.waitUntil(5_000) { rule.onAllNodesWithText("今日小路").fetchSemanticsNodes().isNotEmpty() }
+            rule.onNodeWithText(current.title).assertDoesNotExist()
             assertTrue(DiaryRecallReminder.calendarUnread(rule.activity, today))
             assertTrue(DiaryRecallReminder.recallUnread(rule.activity, today))
             rule.onNodeWithContentDescription("展开日历").performClick()
@@ -160,6 +164,32 @@ class DiaryLibraryInteractionTest {
                 is String -> editor.putString(key, value)
             } }
             editor.commit()
+        }
+    }
+
+    @Test fun todayEntrancesShareIdentityAndOpeningDoesNotSaveEmptyRecords(): Unit = runBlocking {
+        val model = model()
+        var road: NoteNode? = null
+        var summary: NoteNode? = null
+        val day = dayMillis()
+        val initial = model.notes.nodes().filter { it.kind == "diary" && it.day == day && it.deletedAt == null }
+        try {
+            rule.activity.setContent { YouthTheme { Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                DiaryLibrary(model, onOpen = { _, _ -> }, onSearch = {}, onExport = {}, onTrash = {}, onSelection = {},
+                    onRoad = { road = it }, onSummary = { node, _ -> summary = node })
+            } } }
+            rule.onNodeWithText("今日小路").performClick()
+            rule.onNodeWithText("今日结语").performClick()
+            File(rule.activity.getExternalFilesDir(null), "diary-home-preview.png").outputStream().use {
+                rule.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            assertNotNull(road)
+            assertEquals(road?.id, summary?.id)
+            assertEquals(day, road?.day)
+            assertEquals(initial, model.notes.nodes().filter { it.kind == "diary" && it.day == day && it.deletedAt == null })
+        } finally {
+            // Opening the entrances itself must not have introduced anything to clean up.
+            assertEquals(initial.map { it.id }.toSet(), model.notes.nodes().filter { it.kind == "diary" && it.day == day && it.deletedAt == null }.map { it.id }.toSet())
         }
     }
 }
